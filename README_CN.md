@@ -123,6 +123,8 @@ docker compose -f docker/docker-compose.yml logs -f newsflow
 
 **获取 token**：Discord 看 [Developer Portal](https://discord.com/developers/applications)；Telegram 找 [@BotFather](https://t.me/BotFather)。详细步骤见 [GUIDE.md](GUIDE.md#一完整命令参考)。
 
+> **不需要任何特权 intent**。NewsFlow 只靠斜杠命令与 Discord 交互，Developer Portal → Bot → Privileged Gateway Intents 三个开关（Presence / Server Members / Message Content）**全部保持关闭**即可。v0.9.1 之前的版本会申请 Message Content，没开就启动崩溃循环；当年开过的话，升级后可以关掉。
+
 ---
 
 ## 📋 环境要求

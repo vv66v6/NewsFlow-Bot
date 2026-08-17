@@ -37,6 +37,8 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 
 所有命令按"功能类别"分组。Discord 为 slash command（斜杠 + 自动补全），Telegram 为前缀命令（空格分隔参数）。
 
+> **Discord 不需要特权 intent**：本项目只用斜杠命令，Developer Portal → Bot → Privileged Gateway Intents 三个开关（Presence / Server Members / Message Content）**全部关闭**即可正常工作。v0.9.1 之前的版本会申请 Message Content intent，Portal 里没开就直接 `PrivilegedIntentsRequired` 崩溃循环；从那之前的版本升级上来的话，这个开关现在是多余授权，建议关掉。
+
 > **Discord 可用频道**：`/feed add` 在普通文字频道、子区 / 帖子（thread）、论坛帖、以及语音频道自带的文字聊天里都能用——推送会投递到运行命令的那个频道。
 
 > **URL 参数自动补全**：除 `/feed add` 和 `/feed test`（输入的本来就是新 URL）外，所有带 `<url>` 参数的命令输入时都会从**本频道订阅列表**弹出建议，可按标题或 URL 关键字过滤；`/feed pause` 只建议未暂停的订阅，`/feed resume` 只建议已暂停的并额外提供 `all`。建议的值就是库里存储的真实 feed URL——粘网站首页订阅时实际入库的是自动发现的 feed 地址，之后管理直接选建议即可，无需手抄 `/feed list` 里的 URL。（超过 100 字符的 URL 受 Discord 选项上限约束不进建议，仍可手动粘贴。）

@@ -123,6 +123,8 @@ You're live when you see `Discord bot logged in as ...` or `Telegram bot started
 
 **Getting a token**: Discord via [Developer Portal](https://discord.com/developers/applications); Telegram via [@BotFather](https://t.me/BotFather).
 
+> **No privileged intents required.** NewsFlow drives Discord through slash commands only — leave all three Privileged Gateway Intents (Presence, Server Members, Message Content) **off**. Releases before v0.9.1 did request Message Content and crash-looped on startup without it; if you enabled it back then, you can turn it off after upgrading.
+
 ---
 
 ## 📋 Requirements
