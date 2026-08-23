@@ -19,10 +19,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Existing sent_entries rows pre-date this column; backfill them with
-    # False (server_default) so the NOT NULL constraint is satisfied. The
-    # default is a one-time migration convenience — new rows get their value
-    # from the ORM `default=False`.
+    # Backfill pre-existing rows with False (server_default) to satisfy NOT NULL.
+    # The default is a one-time migration convenience; new rows use the ORM default.
     with op.batch_alter_table('sent_entries', schema=None) as batch_op:
         batch_op.add_column(
             sa.Column(

@@ -56,6 +56,20 @@ def _reject_unknown_keys(context: str, cfg: dict[Any, Any], allowed: frozenset[s
         raise SourceConfigError(f"{context}: unknown key(s) {unknown}. Allowed: {sorted(allowed)}")
 
 
+def _require_bool(context: str, key: str, value: Any, default: bool) -> bool:
+    """YAML booleans must actually BE booleans — `bool("false")` is True
+    (non-empty string), silently inverting the operator's intent. Mirrors
+    webhook_sync's check."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    raise SourceConfigError(
+        f"{context}: `{key}` must be a YAML boolean (true/false), got {value!r} "
+        f'— remove the quotes if you wrote "false"'
+    )
+
+
 @dataclass
 class SubscriberCfg:
     platform: str
@@ -72,10 +86,9 @@ class SourceCfg:
     type: str
     config: dict[str, Any]
     subscribers: list[SubscriberCfg] = field(default_factory=list)
-    # Per-source fetch cadence. The global loop still ticks every
-    # FETCH_INTERVAL_MINUTES; a source with its own (necessarily longer to
-    # matter) interval is skipped by ticks that come sooner. Stored inside
-    # Feed.config under the same reserved key.
+    # Per-source fetch cadence, stored in Feed.config under a reserved key. The global
+    # loop still ticks every FETCH_INTERVAL_MINUTES; a longer per-source interval
+    # just skips the earlier ticks.
     fetch_interval_minutes: int | None = None
 
 
@@ -172,13 +185,14 @@ def _parse_subscribers(source_name: str, raw: Any) -> list[SubscriberCfg]:
             raise SourceConfigError(
                 f"source {source_name!r}: subscriber needs a non-empty string `channel`"
             )
+        ctx = f"source {source_name!r} subscriber"
         out.append(
             SubscriberCfg(
                 platform=platform,
                 channel=channel,
-                translate=bool(item.get("translate", False)),
+                translate=_require_bool(ctx, "translate", item.get("translate"), False),
                 language=str(item.get("language", "zh-CN")),
-                silent=bool(item.get("silent", False)),
+                silent=_require_bool(ctx, "silent", item.get("silent"), False),
             )
         )
     return out
@@ -218,10 +232,8 @@ async def _reconcile(session: AsyncSession, sources: list[SourceCfg]) -> None:
         try:
             feed = await feed_service.upsert_source_feed(src.url, src.type, stored_config)
         except SourceFeedConflictError as e:
-            # The URL collides with a user's interactively-added RSS feed.
-            # Skip this source (and its subscribers) rather than hijack the
-            # feed; the RSS feed stays untouched and _remove_stale (non-RSS
-            # only) never deletes it.
+            # URL collides with a user's interactively-added RSS feed. Skip this source
+            # rather than hijack the feed; _remove_stale is non-RSS only, so it survives.
             logger.warning(f"source_sync: skipping source {src.name!r}: {e}")
             continue
         await session.flush()  # ensure feed.id is populated
@@ -256,10 +268,8 @@ async def _reconcile(session: AsyncSession, sources: list[SourceCfg]) -> None:
                     f"source_sync: subscribed {sub_cfg.platform}/{sub_cfg.channel} → {src.name!r}"
                 )
             elif existing.platform_user_id != _OWNER:
-                # Defense in depth: a sub at this (platform, channel, feed)
-                # that we don't own must never be silently rewritten by the
-                # file. (Can't normally happen — interactive subs are on RSS
-                # feeds — but guard anyway.)
+                # Defence in depth: a sub at this (platform, channel, feed) that we do not own
+                # must never be silently rewritten by the file.
                 logger.warning(
                     f"source_sync: subscription {existing.platform}/"
                     f"{existing.platform_channel_id} → feed_id={feed.id} is "
@@ -285,21 +295,15 @@ async def _remove_stale(
 ) -> None:
     known = declarable_source_types()
 
-    # 1. Drop non-RSS feeds that left the file. Deleting a feed cascades to
-    #    ALL of its subscriptions and their SentEntry dedupe history —
-    #    including rows this sync does not own (an interactive /feed add on
-    #    the same URL, or webhooks.yaml's "yaml" rows). A feed with foreign
-    #    subscribers is therefore kept alive (it keeps fetching for them);
-    #    step 2 below still removes the source-yaml subscriptions, which is
-    #    all we own.
+    # 1. Drop non-RSS feeds that left the file. Deleting a feed cascades to ALL its
+    #    subscriptions and their SentEntry history, including rows this sync does
+    #    not own, so a feed with foreign subscribers is kept alive.
     feeds_result = await session.execute(select(Feed).where(Feed.source_type.in_(known)))
     for feed in feeds_result.scalars().all():
         if feed.url in desired_urls:
             continue
-        # Explicit COUNT rather than feed.subscriptions: the selectin
-        # collection is not refreshed for a feed already in this session's
-        # identity map, so it can miss subscriptions created after the feed
-        # was first loaded.
+        # Explicit COUNT rather than feed.subscriptions: the selectin collection is not
+        # refreshed for a feed already in this session's identity map.
         foreign_count = (
             await session.execute(
                 select(func.count())

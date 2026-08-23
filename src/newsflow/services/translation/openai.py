@@ -11,10 +11,9 @@ from newsflow.services.translation.base import TranslationProvider, TranslationR
 
 logger = logging.getLogger(__name__)
 
-# Default translation prompt. Users can override via
-# Settings.translation_system_prompt (env: TRANSLATION_SYSTEM_PROMPT).
-# Both placeholders are always filled — {source_desc} collapses to
-# "the source language (auto-detect)" when source_lang is unknown.
+# Default translation prompt; override via TRANSLATION_SYSTEM_PROMPT. Both
+# placeholders are always filled — {source_desc} collapses to an auto-detect
+# phrase when source_lang is unknown.
 DEFAULT_TRANSLATION_PROMPT = (
     "You are a professional translator. "
     "Translate the following text from {source_desc} to {target_name}. "

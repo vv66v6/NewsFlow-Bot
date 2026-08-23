@@ -47,11 +47,8 @@ def upgrade() -> None:
             sa.Column("guid", sa.String(length=2048), nullable=True)
         )
 
-    # Step 2: backfill (feed_id, guid) from feed_entries via the old
-    # entry_id FK. Rows whose entry_id no longer points at a live
-    # FeedEntry (shouldn't exist thanks to the old CASCADE, but possible
-    # if an earlier crash left stragglers) will get NULL here and be
-    # dropped in step 3.
+    # Step 2: backfill (feed_id, guid) from feed_entries via the old entry_id FK.
+    # Rows whose entry_id no longer resolves get NULL here and are dropped in step 3.
     op.execute(
         """
         UPDATE sent_entries
@@ -73,15 +70,9 @@ def upgrade() -> None:
         "DELETE FROM sent_entries WHERE feed_id IS NULL OR guid IS NULL"
     )
 
-    # Step 4: lock down the new columns, drop the old entry_id column +
-    # its unique index, and create the new unique index keyed on
-    # (subscription_id, feed_id, guid).
-    #
-    # batch_alter_table on SQLite implements all of this by rebuilding
-    # the table — the old FK to feed_entries.id is dropped along with
-    # the entry_id column. The subscription FK (ondelete=CASCADE) is
-    # preserved: SQLAlchemy reads the existing FK from the reflected
-    # schema and re-applies it on the new table.
+    # Step 4: lock down the new columns, drop entry_id + its unique index, add the
+    # unique index on (subscription_id, feed_id, guid). batch_alter_table rebuilds the
+    # table on SQLite; the subscription FK (ondelete=CASCADE) is re-applied from schema.
     with op.batch_alter_table("sent_entries", schema=None) as batch_op:
         batch_op.drop_index("ix_sent_entries_subscription_entry")
         batch_op.drop_column("entry_id")
@@ -99,10 +90,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Best-effort downgrade: re-create entry_id, look up FeedEntry by
-    # (feed_id, guid). SentEntry rows whose FeedEntry has since been
-    # cleaned up cannot be re-keyed and are dropped — that's the price
-    # of going back to the old FK-based design.
+    # Best-effort downgrade: re-key by (feed_id, guid). Rows whose FeedEntry has been
+    # cleaned up cannot be re-keyed and are dropped — the price of the old design.
     with op.batch_alter_table("sent_entries", schema=None) as batch_op:
         batch_op.add_column(sa.Column("entry_id", sa.Integer(), nullable=True))
 

@@ -51,9 +51,12 @@ def _check(errors: list[str], warnings: list[str], infos: list[str]) -> None:
         tokens.append("telegram")
     if tokens:
         infos.append(f"platform tokens present: {', '.join(tokens)}")
+    elif settings.webhooks_enabled:
+        infos.append("no chat-platform token; webhook-only deployment (webhooks.yaml present)")
     else:
         errors.append(
-            "no platform token set (DISCORD_TOKEN / TELEGRAM_TOKEN) — startup would abort"
+            "no delivery platform configured (DISCORD_TOKEN / TELEGRAM_TOKEN / "
+            "webhooks.yaml) — startup would abort"
         )
 
     if settings.translation_enabled and not settings.can_translate():

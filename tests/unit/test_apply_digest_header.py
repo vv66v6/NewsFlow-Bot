@@ -53,3 +53,27 @@ def test_enabled_same_behavior_on_webhook_as_telegram():
     out = d.apply_digest_header("body", "webhook")
     assert "📰 **Digest**" in out
     assert "@here" not in out
+
+
+def test_discord_body_mass_mentions_are_neutralized():
+    """The Discord adapter sends digest text with everyone-mentions
+    ALLOWED (so the code-added header can ping) — which is only safe
+    because model-emitted @everyone/@here inside the LLM body get a
+    zero-width space injected here first."""
+    d = _make_dispatcher(mention_on=True)
+    out = d.apply_digest_header("hi @everyone and @here!", "discord")
+    header, _, body = out.partition("\n\n")
+    assert header.startswith("@here")  # the ONE live mention
+    assert "@everyone" not in body
+    assert "@here" not in body
+    # Visible text is preserved — only a zero-width space was inserted.
+    assert body.replace("​", "") == "hi @everyone and @here!"
+
+
+def test_non_discord_body_left_untouched():
+    """Telegram/webhook have no Discord-style mass mentions; their body
+    bytes must pass through unmodified (webhook consumers may hash them)."""
+    d = _make_dispatcher(mention_on=True)
+    out = d.apply_digest_header("hi @everyone", "telegram")
+    assert out.endswith("\n\nhi @everyone")
+    assert "​" not in out

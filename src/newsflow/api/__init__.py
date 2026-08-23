@@ -64,10 +64,8 @@ def create_app() -> "FastAPI":
         redoc_url="/redoc" if settings.log_level == "DEBUG" else None,
     )
 
-    # CORS is opt-in: no configured origins = no CORS headers at all (the
-    # default deployment is loopback/API-key anyway). API_CORS_ORIGINS=*
-    # restores the old blanket wildcard; credentials stay off because a
-    # wildcard origin with credentials is invalid per the CORS spec.
+    # CORS is opt-in: no configured origins = no CORS headers. `*` restores the old
+    # wildcard; credentials stay off because wildcard-with-credentials is invalid.
     if settings.api_cors_origins:
         app.add_middleware(
             CORSMiddleware,
@@ -77,10 +75,8 @@ def create_app() -> "FastAPI":
             allow_headers=["*"],
         )
 
-    # Include routers. Data-bearing GET routers carry the read gate (open
-    # until an API key is configured, then key-required); health probes stay
-    # open for container HEALTHCHECK / orchestrator probes. The gate on
-    # write-only routers is harmless — their routes demand the same key.
+    # Data-bearing GET routers carry the read gate (open until an API key is
+    # configured); health probes stay open for container HEALTHCHECK.
     from fastapi import Depends
 
     from newsflow.api.deps import require_read_api_key
@@ -127,10 +123,8 @@ async def run_api_server() -> None:
         host=settings.api_host,
         port=settings.api_port,
         log_level=settings.log_level.lower(),
-        # Uvicorn's default dictConfig attaches its own plain-text handlers
-        # with propagate=False, which interleaves non-JSON lines into the
-        # LOG_FORMAT=json stream. None skips that config entirely so uvicorn
-        # records propagate to the root handler's shared formatter.
+        # None skips uvicorn's default dictConfig, whose plain-text handlers with
+        # propagate=False would interleave non-JSON lines into a json log stream.
         log_config=None,
     )
     server = uvicorn.Server(config)

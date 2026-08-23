@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,14 +58,21 @@ async def health_check() -> HealthResponse:
     )
 
 
-@router.get("/ready", response_model=ReadinessResponse)
+@router.get(
+    "/ready",
+    response_model=ReadinessResponse,
+    responses={503: {"model": ReadinessResponse, "description": "Not ready"}},
+)
 async def readiness_check(
     db: AsyncSession = Depends(get_db),
-) -> ReadinessResponse:
+) -> JSONResponse:
     """
     Readiness check endpoint.
 
-    Verifies all required services are available.
+    Verifies all required services are available. Not-ready returns HTTP 503:
+    orchestrators and load balancers act on the status code, not the JSON
+    body — a 200 with ready:false would keep routing traffic to a dead
+    instance.
     """
     checks: dict[str, bool] = {}
 
@@ -82,7 +90,10 @@ async def readiness_check(
     # Overall readiness
     ready = all(checks.values())
 
-    return ReadinessResponse(ready=ready, checks=checks)
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content=ReadinessResponse(ready=ready, checks=checks).model_dump(),
+    )
 
 
 @router.get("/live")

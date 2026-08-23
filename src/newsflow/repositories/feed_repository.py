@@ -14,14 +14,11 @@ from newsflow.repositories._result import rowcount
 
 logger = logging.getLogger(__name__)
 
-# Column-length caps for untrusted feed-derived text (mirrors the FeedEntry /
-# Feed model columns). Feeds are untrusted and some serve titles/URLs longer
-# than the column limit: on Postgres an over-length value fails the INSERT with
-# StringDataRightTruncationError and takes the whole feed's fetch down; on
-# SQLite it stores but the oversized text then overruns platform message limits
-# at render. Truncate at ingest so neither can happen.
+# Column-length caps for untrusted feed-derived text (mirrors the model columns).
+# Over-length values fail the INSERT on Postgres and overrun platform message
+# limits on SQLite, so truncate at ingest.
 _ENTRY_TITLE_CAP, _ENTRY_URL_CAP, _ENTRY_AUTHOR_CAP = 1024, 2048, 256
-_FEED_TITLE_CAP, _FEED_HEADER_CAP = 512, 256
+_FEED_TITLE_CAP, _FEED_HEADER_CAP, _FEED_URL_CAP = 512, 256, 2048
 
 
 def _cap(value: str | None, limit: int) -> str | None:
@@ -87,12 +84,15 @@ class FeedRepository:
         source_type: str = "rss",
         config: dict | None = None,
     ) -> Feed:
-        """Create a new feed."""
+        """Create a new feed. Feed-derived metadata is capped to its column
+        width here just like the update path (update_feed_metadata) — an
+        over-length remote title otherwise fails the very first INSERT on
+        Postgres and the feed can never be added."""
         feed = Feed(
             url=url,
-            title=title,
-            description=description,
-            site_url=site_url,
+            title=_cap(title, _FEED_TITLE_CAP),
+            description=description,  # Text column — no cap
+            site_url=_cap(site_url, _FEED_URL_CAP),
             source_type=source_type,
             config=config,
         )
@@ -187,34 +187,6 @@ class FeedRepository:
         )
         return result.scalars().all()
 
-    async def create_entry(
-        self,
-        feed_id: int,
-        guid: str,
-        title: str,
-        link: str,
-        summary: str | None = None,
-        content: str | None = None,
-        author: str | None = None,
-        published_at: datetime | None = None,
-        image_url: str | None = None,
-    ) -> FeedEntry:
-        """Create a new feed entry."""
-        entry = FeedEntry(
-            feed_id=feed_id,
-            guid=guid,
-            title=title,
-            link=link,
-            summary=summary,
-            content=content,
-            author=author,
-            published_at=published_at,
-            image_url=image_url,
-        )
-        self.session.add(entry)
-        await self.session.flush()
-        return entry
-
     async def create_entries_bulk(
         self,
         feed_id: int,
@@ -246,14 +218,9 @@ class FeedRepository:
         )
         existing_guids = set(result.scalars().all())
 
-        # Deduplicate within this batch as well as against the DB. A single
-        # fetch can return the same guid twice — either legitimately, or via
-        # the degenerate `"{title}-{published}"` guid fallback in
-        # FeedFetcher._parse_entry when entries carry no id/guid/link. Inserting
-        # both rows would violate the (feed_id, guid) unique index on flush, and
-        # that IntegrityError would poison the shared session for the rest of
-        # the dispatch cycle (every other feed's metadata/backoff updates and
-        # pending SentEntry writes would be rolled back).
+        # Deduplicate within the batch as well as against the DB: one fetch can return a
+        # guid twice, and the resulting IntegrityError on flush would poison the shared
+        # session for the rest of the dispatch cycle.
         now = datetime.now(UTC)
         seen: set[str] = set()
         new_entries: list[FeedEntry] = []
@@ -289,12 +256,14 @@ class FeedRepository:
         summary_translated: str,
         language: str,
     ) -> None:
-        """Update entry with translation."""
+        """Update entry with translation. The translated title is capped to
+        its column width — providers can expand text past the original's
+        length, and Postgres rejects over-length values outright."""
         await self.session.execute(
             update(FeedEntry)
             .where(FeedEntry.id == entry_id)
             .values(
-                title_translated=title_translated,
+                title_translated=title_translated[:_ENTRY_TITLE_CAP],
                 summary_translated=summary_translated,
                 translation_language=language,
             )

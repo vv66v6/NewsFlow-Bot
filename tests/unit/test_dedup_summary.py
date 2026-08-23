@@ -73,10 +73,8 @@ def test_summary_with_short_but_real_addition_on_threshold():
 
 
 def test_title_case_punctuation_summary_match():
-    # Title has trailing punctuation, summary doesn't (or vice versa).
-    # Current implementation treats them as different because
-    # normalization doesn't strip punctuation, only case+whitespace.
-    # Document this as a limitation if someone edits the heuristic.
+    # Trailing punctuation on one side only: normalization strips case and whitespace
+    # but not punctuation, so these count as different. A limitation, not a rule.
     assert dedup_summary("Fed cuts rates.", "Fed cuts rates") == "Fed cuts rates"
 
 

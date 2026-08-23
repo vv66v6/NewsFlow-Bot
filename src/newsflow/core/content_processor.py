@@ -166,14 +166,9 @@ def dedup_summary(title: str, summary: str) -> str:
     if norm_summary == norm_title:
         return ""
 
-    # Summary starts with title — strip title prefix and see what's left.
-    # If only a few chars of punctuation / source name remain, it's
-    # not a real summary. Threshold 30 chars chosen so "Fed cuts - CNBC
-    # 3 hours ago" (~25 chars after strip) gets dropped but
-    # "Fed cuts to stave off inflation risk" (~35 chars) stays. CJK
-    # packs ~3x the information per char (30 hanzi is a full sentence
-    # of pricing/dates — real increment, not attribution noise), so a
-    # remainder containing CJK uses a 12-char threshold instead.
+    # Strip the title prefix and judge the remainder: under 30 chars means it was
+    # attribution noise, not a summary. A remainder containing CJK uses 12 instead —
+    # CJK packs ~3x the information per character.
     if norm_summary.startswith(norm_title):
         remainder = norm_summary[len(norm_title) :].strip(" -—…|·,.")
         threshold = 12 if _CJK_RE.search(remainder) else 30

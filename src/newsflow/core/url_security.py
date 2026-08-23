@@ -1,17 +1,10 @@
 """URL safety checks for user-supplied feed URLs.
 
-Rejects URLs that would allow an attacker to use the bot as a request
-forwarder against the host's private network (SSRF). Specifically:
+Allows only http/https, rejects IP-literal hosts that are private, loopback, link-local
+or reserved, and caps URL length.
 
-- only http/https schemes are allowed
-- IP-literal hosts are rejected if they're private, loopback, link-local,
-  or reserved (catches 127.0.0.1, 10/8, 192.168/16, 169.254.169.254, ::1, …)
-- URL length is capped
-
-What this does NOT protect against: a hostname that resolves at fetch time
-to a private IP. DNS-rebinding-style SSRF needs a custom aiohttp connector
-that pins the resolved IP before connect. For now we lean on the container
-egress policy / VPS network boundary for that defense.
+Does NOT protect against a hostname that resolves to a private IP at fetch time; that
+needs a connector pinning the resolved IP before connect.
 """
 
 import ipaddress

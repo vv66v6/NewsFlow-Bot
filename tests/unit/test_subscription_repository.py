@@ -404,10 +404,8 @@ async def test_cleanup_rediscover_no_longer_redelivers(session):
     await session.delete(entry)
     await session.flush()
 
-    # Step 3: source feed re-serves the same guid; fetch creates a
-    # fresh FeedEntry row. (SQLite may re-use rowids — that's fine, the
-    # whole point of the new schema is that dedupe doesn't depend on
-    # FeedEntry.id at all.)
+    # Step 3: the source re-serves the same guid and fetch creates a fresh FeedEntry.
+    # SQLite may reuse rowids — fine, dedupe no longer depends on FeedEntry.id.
     reborn = FeedEntry(
         feed_id=feed.id,
         guid="reborn",

@@ -32,10 +32,8 @@ from newsflow.services import SubscriptionService, get_dispatcher
 # at 4096 chars; 20 entries × ~150 chars each leaves comfortable headroom.
 LIST_PAGE_SIZE = 20
 
-# Discord caps an autocomplete response at 25 choices and each choice's
-# name/value at 100 chars. discord.py enforces neither — an oversized
-# response is rejected wholesale by the API — so the callback must stay
-# within both limits itself.
+# Discord caps autocomplete at 25 choices and 100 chars per name/value, and
+# discord.py enforces neither — an oversized response is rejected wholesale.
 AUTOCOMPLETE_MAX_CHOICES = 25
 AUTOCOMPLETE_MAX_LEN = 100
 
@@ -240,12 +238,9 @@ class NewsFlowBot(commands.Bot):
     """
 
     def __init__(self) -> None:
-        # Default (non-privileged) intents only. This bot is slash-command
-        # only — app commands arrive as interactions, which no intent gates —
-        # so requesting message_content would force every operator through
-        # the Developer Portal's privileged-intent toggle for nothing, and
-        # crash-loop the process (PrivilegedIntentsRequired) when they
-        # inevitably don't know to flip it.
+        # Default (non-privileged) intents only. Slash commands arrive as interactions,
+        # which no intent gates; requesting message_content would crash-loop with
+        # PrivilegedIntentsRequired until the operator flips a Portal toggle for nothing.
         intents = discord.Intents.default()
 
         super().__init__(
@@ -255,11 +250,9 @@ class NewsFlowBot(commands.Bot):
             command_prefix=commands.when_mentioned,
             intents=intents,
             help_command=None,
-            # Ping-safe baseline: nothing pings unless a send explicitly
-            # re-enables it. Feed titles/summaries flow into plain message
-            # content on the template path, so an article containing
-            # "@everyone" must stay inert; /feed mention deliveries pass
-            # a per-send allowance for exactly the configured target.
+            # Ping-safe baseline: nothing pings unless a send explicitly re-enables it.
+            # Feed titles/summaries reach plain content on the template path, so an article
+            # containing "@everyone" must stay inert.
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
@@ -313,11 +306,9 @@ class FeedCommands(commands.Cog):
     def __init__(self, bot: NewsFlowBot) -> None:
         self.bot = bot
 
-    # Native permission gate: without it any member could remove feeds,
-    # silence the channel, or rewrite filters. Discord can't set permissions
-    # per SUBcommand, so the whole group defaults to Manage Server; server
-    # admins can re-grant it per role/channel under Server Settings →
-    # Integrations. DMs are unaffected (no member permissions there).
+    # Native permission gate: without it any member could remove feeds or rewrite
+    # filters. Discord cannot set permissions per SUBcommand, so the whole group
+    # defaults to Manage Server; admins retune per role under Integrations.
     feed_group = app_commands.Group(
         name="feed",
         description="Manage RSS feeds",
@@ -1569,12 +1560,9 @@ class DigestCommands(commands.Cog):
 
         session_factory = get_session_factory()
 
-        # Session 1: load config + generate digest text. Closes before
-        # Discord IO so we're not holding a pooled connection across a
-        # multi-second network round-trip. Capture scalar fields we
-        # need later — ORM attribute access after session close is
-        # fine here (expire_on_commit=False) but being explicit avoids
-        # subtle detached-instance bugs.
+        # Session 1: load config + generate digest text. Closes before Discord IO so no
+        # pooled connection is held across a multi-second round-trip. Scalars are
+        # captured explicitly to avoid subtle detached-instance bugs.
         async with session_factory() as session:
             repo = ChannelDigestRepository(session)
             config = await repo.get("discord", str(interaction.channel_id))
@@ -1630,12 +1618,9 @@ class DigestCommands(commands.Cog):
             )
             return
 
-        # Session 2: persist delivery mark. Kept separate + tiny so it
-        # doesn't contend with the dispatch loop's long write
-        # transaction. If the UPDATE still fails under lock pressure,
-        # the digest is already in the channel — surface a warning to
-        # the user rather than letting the interaction die with "the
-        # application did not respond".
+        # Session 2: persist the delivery mark, kept tiny so it does not contend with the
+        # dispatch loop's long write transaction. The digest is already in the channel,
+        # so a failed UPDATE warns the user instead of dying with "did not respond".
         mark_failed = False
         try:
             async with session_factory() as session:
@@ -1711,13 +1696,9 @@ class DiscordAdapter(BaseAdapter):
             mention = message.mention
 
             if message.template_text is not None:
-                # Custom template: plain content (Discord renders the
-                # Markdown natively). show_image was already applied to
-                # message.image_url by the dispatcher — when an image is
-                # left, carry it in an image-only embed so the template
-                # keeps full authority over the text. A configured mention
-                # is prefixed unless the template already placed it via
-                # {mention} (then the rendered text contains it verbatim).
+                # Custom template: plain content (Discord renders Markdown natively). A surviving
+                # image rides in an image-only embed so the template keeps authority over text.
+                # A configured mention is prefixed unless the template placed it via {mention}.
                 content = message.template_text
                 if mention and mention not in content:
                     content = f"{mention}\n{content}"
@@ -1753,6 +1734,18 @@ class DiscordAdapter(BaseAdapter):
     async def send_text(self, channel_id: str, text: str) -> bool:
         """Send plain text to a Discord channel. Raises ChannelGoneError
         when the channel no longer exists — see send_message."""
+        return await self._send_channel_text(channel_id, text, allowed_mentions=None)
+
+    async def _send_channel_text(
+        self,
+        channel_id: str,
+        text: str,
+        *,
+        allowed_mentions: discord.AllowedMentions | None,
+    ) -> bool:
+        """Shared plain-text send. `allowed_mentions=None` inherits the
+        client-wide AllowedMentions.none() baseline; digest sends pass an
+        explicit allowance instead (see send_digest_text)."""
         try:
             channel = self.bot.get_channel(int(channel_id))
             if not channel:
@@ -1761,7 +1754,10 @@ class DiscordAdapter(BaseAdapter):
             if not channel or not isinstance(channel, discord.abc.Messageable):
                 return False
 
-            await channel.send(text)
+            if allowed_mentions is not None:
+                await channel.send(text, allowed_mentions=allowed_mentions)
+            else:
+                await channel.send(text)
             return True
 
         except discord.NotFound as e:
@@ -1769,6 +1765,34 @@ class DiscordAdapter(BaseAdapter):
         except Exception as e:
             logger.exception(f"Failed to send text to {channel_id}: {e}")
             return False
+
+    @staticmethod
+    def _digest_allowed_mentions() -> discord.AllowedMentions | None:
+        """Mention allowance for digest sends.
+
+        With DIGEST_MENTION_ON_DELIVERY on, the code-added `@here` header
+        must actually ping, so digest sends allow everyone-mentions —
+        that's safe because Dispatcher.apply_digest_header neutralized any
+        mass-mention token inside the LLM-generated body first. Feature
+        off → None → the client-wide AllowedMentions.none() baseline
+        applies and nothing in digest text can ping."""
+        if get_settings().digest_mention_on_delivery:
+            return discord.AllowedMentions(everyone=True)
+        return None
+
+    async def send_digest_text(self, channel_id: str, text: str) -> bool:
+        """Digest send: identical to send_text except for the digest
+        mention allowance (see _digest_allowed_mentions)."""
+        return await self._send_channel_text(
+            channel_id, text, allowed_mentions=self._digest_allowed_mentions()
+        )
+
+    async def send_digest_text_pinned(self, channel_id: str, text: str) -> tuple[bool, str | None]:
+        """Digest counterpart of send_text_pinned, with the digest mention
+        allowance applied to the sent message."""
+        return await self._send_channel_text_pinned(
+            channel_id, text, allowed_mentions=self._digest_allowed_mentions()
+        )
 
     async def send_text_pinned(self, channel_id: str, text: str) -> tuple[bool, str | None]:
         """Send text and pin the resulting message. Respects the
@@ -1779,8 +1803,19 @@ class DiscordAdapter(BaseAdapter):
         reaches the channel. Permissions and the Discord 50-pin cap are
         the common reasons for a pin to fail.
         """
+        return await self._send_channel_text_pinned(channel_id, text, allowed_mentions=None)
+
+    async def _send_channel_text_pinned(
+        self,
+        channel_id: str,
+        text: str,
+        *,
+        allowed_mentions: discord.AllowedMentions | None,
+    ) -> tuple[bool, str | None]:
         if not get_settings().digest_auto_pin:
-            sent = await self.send_text(channel_id, text)
+            sent = await self._send_channel_text(
+                channel_id, text, allowed_mentions=allowed_mentions
+            )
             return sent, None
 
         try:
@@ -1790,7 +1825,10 @@ class DiscordAdapter(BaseAdapter):
             if not channel or not isinstance(channel, discord.abc.Messageable):
                 return False, None
 
-            msg = await channel.send(text)
+            if allowed_mentions is not None:
+                msg = await channel.send(text, allowed_mentions=allowed_mentions)
+            else:
+                msg = await channel.send(text)
         except discord.NotFound as e:
             raise ChannelGoneError(channel_id, reason=str(e)) from e
         except discord.Forbidden:
@@ -1849,13 +1887,9 @@ class DiscordAdapter(BaseAdapter):
         ts = message.published_at or datetime.now(UTC)
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=UTC)
-        # Title goes in the embed TITLE field (with url), NOT as a markdown link
-        # in the description. The title field is not markdown-parsed, so a feed
-        # title containing "](" can no longer inject a clickable link into the
-        # embed (a phishing vector). Discord caps the title at 256 chars, so
-        # truncating here also stops an oversized title from failing the send.
-        # url is set only for a real http(s) link (Discord rejects a non-URL
-        # embed url).
+        # Title goes in the embed TITLE field (with url), never as a markdown link in the
+        # description: the title field is not markdown-parsed, so "](", cannot inject a
+        # clickable link. Capped at 256; url set only for a real http(s) link.
         title = message.display_title[:256] or "(untitled)"
         url = message.link if message.link.startswith(("http://", "https://")) else None
         embed = discord.Embed(

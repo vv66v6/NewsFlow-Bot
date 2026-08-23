@@ -1,18 +1,13 @@
 """Runtime reload of the declarative YAML configs (webhooks.yaml / sources.yaml).
 
-Startup parses and syncs these once (main.py). This module re-runs the same
-idempotent syncs on demand — SIGHUP (Unix) or ``POST /api/admin/reload`` — so
-editing a declarative feed or destination no longer costs a full restart
-(platform reconnects, warm caches lost).
+Re-runs the same idempotent syncs main.py runs at startup, on SIGHUP (Unix) or
+``POST /api/admin/reload``.
 
-Failure semantics deliberately differ from startup: a bad file at boot aborts
-(the operator is right there), a bad file at reload keeps the PREVIOUS synced
-state — both syncs parse fully before touching the DB — and reports the error
-to the caller instead of killing a running bot. The two files reload
-independently: one being broken doesn't block the other.
+Failure semantics differ from startup: a bad file at boot aborts, a bad file at reload
+keeps the PREVIOUS synced state (both syncs parse fully before touching the DB) and
+reports the error to the caller. The two files reload independently.
 
-Removing a config file entirely while running is out of scope: an absent file
-skips that sync (state kept). Disabling a feature stays a restart operation.
+An absent file skips that sync and keeps its state; disabling a feature is a restart.
 """
 
 from __future__ import annotations

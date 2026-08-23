@@ -52,7 +52,12 @@ services:
       # to enable those features (file absent = feature off).
       - ../config:/app/config:ro
     ports:
-      - "${API_PORT:-8000}:8000"
+      # Loopback-only by default: with API_ENABLED=true but no API_KEY the
+      # read endpoints are unauthenticated, and a VPS usually has no "LAN" —
+      # 0.0.0.0 would mean the public internet. For remote access, put a
+      # reverse proxy in front (it reaches the container over the compose
+      # network without any host port), or change the bind address here.
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     networks:
       - newsflow-network
     # Use public DNS resolvers instead of whatever the host hands the

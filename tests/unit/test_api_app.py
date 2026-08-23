@@ -49,3 +49,43 @@ def test_api_host_defaults_to_loopback():
 def test_cors_origins_accepts_comma_form():
     settings = Settings(telegram_token="dummy", api_cors_origins="https://a.com, https://b.com")
     assert settings.api_cors_origins == ["https://a.com", "https://b.com"]
+
+
+# ===== readiness status codes =====
+
+
+class _GoodDB:
+    async def execute(self, *args, **kwargs):
+        return None
+
+
+class _BadDB:
+    async def execute(self, *args, **kwargs):
+        raise RuntimeError("db down")
+
+
+async def test_ready_returns_200_when_healthy(monkeypatch):
+    from newsflow.api.routes.health import readiness_check
+
+    monkeypatch.setattr(
+        "newsflow.api.routes.health.get_settings", lambda: Settings(telegram_token="x")
+    )
+    resp = await readiness_check(db=_GoodDB())
+    assert resp.status_code == 200
+
+
+async def test_ready_returns_503_when_db_down(monkeypatch):
+    """Orchestrators and load balancers act on the status code, not the
+    body — a 200 with ready:false kept routing traffic to a dead app."""
+    import json
+
+    from newsflow.api.routes.health import readiness_check
+
+    monkeypatch.setattr(
+        "newsflow.api.routes.health.get_settings", lambda: Settings(telegram_token="x")
+    )
+    resp = await readiness_check(db=_BadDB())
+    assert resp.status_code == 503
+    body = json.loads(resp.body)
+    assert body["ready"] is False
+    assert body["checks"]["database"] is False

@@ -151,10 +151,8 @@ class ChannelDigestRepository:
             Subscription.platform_channel_id == channel_id,
             SentEntry.sent_at > since,
             SentEntry.sent_at <= until,
-            # Back-catalog rows seeded on subscribe were never shown to the
-            # channel — nothing to summarize. Exclude them unconditionally:
-            # even an include_filtered digest must not surface entries the
-            # user never received.
+            # Seeded back-catalog rows were never shown to the channel. Exclude them
+            # unconditionally — even an include_filtered digest must not surface them.
             SentEntry.seeded.is_(False),
         ]
         if not include_filtered:

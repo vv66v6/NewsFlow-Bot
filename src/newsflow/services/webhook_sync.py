@@ -41,10 +41,9 @@ logger = logging.getLogger(__name__)
 # The webhook model docstring promises this stays "small"; enforce it here.
 _MAX_WEBHOOK_TIMEOUT_S = 60
 
-# Subscription.platform_user_id marker identifying rows this sync owns.
-# sources.yaml also creates platform="webhook" subscriptions (owner
-# "source-yaml"), so every mutation/removal below must filter on this
-# marker — otherwise the two syncs delete each other's rows on startup.
+# platform_user_id marker for rows this sync owns. sources.yaml also creates
+# platform="webhook" rows (owner "source-yaml"), so every mutation below must
+# filter on it or the two syncs delete each other on startup.
 _OWNER = "yaml"
 
 
@@ -66,6 +65,21 @@ def _reject_unknown_keys(context: str, cfg: dict[Any, Any], allowed: frozenset[s
     unknown = sorted(str(k) for k in cfg.keys() if k not in allowed)
     if unknown:
         raise WebhookConfigError(f"{context}: unknown key(s) {unknown}. Allowed: {sorted(allowed)}")
+
+
+def _require_bool(context: str, key: str, value: Any, default: bool) -> bool:
+    """YAML booleans must actually BE booleans. `bool(value)` coercion would
+    turn the quoted string `"false"` (truthy — it's a non-empty str) into
+    True, silently inverting the operator's intent. Unquoted false/no/off
+    parse to real bools under YAML 1.1 and pass through untouched."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    raise WebhookConfigError(
+        f"{context}: `{key}` must be a YAML boolean (true/false), got {value!r} "
+        f'— remove the quotes if you wrote "false"'
+    )
 
 
 @dataclass
@@ -144,9 +158,21 @@ def _parse_destinations(
                 f"Supported: {sorted(SUPPORTED_FORMATS)}"
             )
 
+        secret = cfg.get("secret")
+        if secret is not None and not isinstance(secret, str):
+            # int-coercion would lose leading zeros ("0123" → 123 → "123")
+            # and silently produce a different HMAC key than intended.
+            raise WebhookConfigError(f"destination {name!r}: `secret` must be a string (quote it)")
+
         headers = cfg.get("headers")
         if headers is not None and not isinstance(headers, dict):
             raise WebhookConfigError(f"destination {name!r}: `headers` must be a mapping")
+        if headers is not None:
+            bad_keys = [k for k in headers if not isinstance(k, str)]
+            if bad_keys:
+                raise WebhookConfigError(
+                    f"destination {name!r}: header names must be strings, got {bad_keys!r}"
+                )
 
         try:
             timeout_s = int(cfg.get("timeout_s", 10))
@@ -166,10 +192,12 @@ def _parse_destinations(
             name=name,
             url=url,
             format=fmt,
-            secret=cfg.get("secret"),
+            secret=secret,
             headers=headers,
             timeout_s=timeout_s,
-            translate=bool(cfg.get("translate", True)),
+            translate=_require_bool(
+                f"destination {name!r}", "translate", cfg.get("translate"), True
+            ),
             language=str(cfg.get("language", "zh-CN")),
         )
     return out
@@ -257,21 +285,16 @@ async def _sync_destinations(session: AsyncSession, config: WebhookConfig) -> No
             row.headers = cfg.headers
             row.timeout_s = cfg.timeout_s
             if not row.is_active or row.error_count:
-                # Still declared in the file = the operator wants it working —
-                # same revival contract as auto-disabled feeds. Sync runs at
-                # startup and on hot reload, so "fix the URL and reload"
-                # closes the breaker.
+                # Still declared in the file = the operator wants it working, same revival
+                # contract as auto-disabled feeds. Sync runs at startup and on hot reload.
                 row.is_active = True
                 row.error_count = 0
                 row.last_error = None
                 logger.info(f"webhook_sync: re-enabled destination {name!r}")
 
-    # Drop destinations that disappeared from YAML, and our subscriptions to
-    # them. Subscriptions reference the destination via string name (not FK)
-    # so we have to delete them explicitly. Subscriptions owned by
-    # sources.yaml that point at the removed destination are source_sync's
-    # to manage — deleting them here would just make source_sync recreate
-    # them (with a fresh SentEntry seed) on the very next startup.
+    # Drop destinations that left the YAML plus our subscriptions to them (they
+    # reference the destination by name, not FK, so deletion is explicit).
+    # Rows owned by sources.yaml are source_sync's to manage.
     for name in set(existing) - set(config.destinations):
         await session.execute(
             delete(Subscription).where(
@@ -339,11 +362,9 @@ async def _sync_subscriptions(session: AsyncSession, config: WebhookConfig) -> N
                 await sub_repo.seed_sent_entries(sub.id, feed.id, keep_latest=0)
                 logger.info(f"webhook_sync: subscribed {dest_name!r} → {url!r}")
             elif existing.platform_user_id != _OWNER:
-                # The same (destination, feed) pair is also declared in
-                # sources.yaml, which owns this row — mirror the ownership
-                # guard in source_sync._reconcile and leave it untouched
-                # rather than rewriting its settings (or double-delivering
-                # via a duplicate row of our own).
+                # This (destination, feed) pair is also declared in sources.yaml, which owns the
+                # row — leave it untouched rather than rewriting its settings or adding a
+                # duplicate that double-delivers.
                 logger.warning(
                     f"webhook_sync: subscription {dest_name!r} → "
                     f"feed_id={feed.id} is owned by "
@@ -358,11 +379,9 @@ async def _sync_subscriptions(session: AsyncSession, config: WebhookConfig) -> N
                 if not existing.is_active:
                     existing.is_active = True
 
-    # Drop our webhook subscriptions that dropped out of the YAML. The owner
-    # filter is load-bearing: without it, every startup would delete the
-    # webhook-platform subscriptions sources.yaml owns (cascading their
-    # SentEntry dedupe history) just for source_sync to recreate them —
-    # losing any not-yet-delivered backlog across each restart.
+    # Drop our webhook subscriptions that left the YAML. The owner filter is
+    # load-bearing: without it every startup deletes the subscriptions sources.yaml
+    # owns (and their SentEntry history) just for source_sync to recreate them.
     result = await session.execute(
         select(Subscription).where(
             Subscription.platform == "webhook",

@@ -42,10 +42,8 @@ class WebhookAdapter(BaseAdapter):
         self._session: aiohttp.ClientSession | None = None
         self._destinations: dict[str, WebhookDestination] = {}
         self._started = False
-        # Event used by start() to block until stop() is called. Without
-        # this the start coroutine would return immediately and asyncio.gather
-        # in main.py would never get a chance to run the finally-block cleanup
-        # of the aiohttp session on shutdown.
+        # start() blocks on this until stop() is called; without it start returns
+        # immediately and main.py's gather never runs the aiohttp session cleanup.
         self._stop_event: asyncio.Event | None = None
 
     @property
@@ -135,8 +133,11 @@ class WebhookAdapter(BaseAdapter):
         timeout = aiohttp.ClientTimeout(total=max(1, dest.timeout_s))
 
         try:
+            # allow_redirects=False: a webhook answering a POST with a redirect is a
+            # misconfiguration, and following it would re-send the signed body and auth
+            # headers to a URL the operator never vetted.
             async with self._session.post(
-                dest.url, data=wire.body, headers=headers, timeout=timeout
+                dest.url, data=wire.body, headers=headers, timeout=timeout, allow_redirects=False
             ) as resp:
                 if 200 <= resp.status < 300:
                     await self._record_send_result(dest, ok=True)
@@ -156,12 +157,8 @@ class WebhookAdapter(BaseAdapter):
             await self._record_send_result(dest, ok=False, error=str(e))
             return False
         except ValueError as e:
-            # aiohttp raises ValueError when a header value is illegal (control
-            # chars, non-latin-1). Treat as a failed send (return False) rather
-            # than letting it escape as an uncaught exception that would wedge
-            # the entry in the dispatch loop. The ntfy converter already
-            # sanitizes feed-derived headers; this guards careless custom
-            # headers and any future header-using format.
+            # aiohttp raises ValueError on an illegal header value. Treat it as a failed send
+            # rather than letting it escape and wedge the entry in the dispatch loop.
             logger.warning(f"webhook {dest.name} ({host}) bad header/request: {e}")
             await self._record_send_result(dest, ok=False, error=str(e))
             return False

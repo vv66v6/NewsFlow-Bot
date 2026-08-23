@@ -1,32 +1,15 @@
 """Per-subscription message templates: {placeholder} substitution.
 
-A template is Markdown-ish text (``**bold**``, ``[text](url)``) with
-single-brace placeholders. Discord renders the result natively as
-message content; Telegram converts it through
-``core.telegram_markdown.markdown_to_telegram_html``.
+Markdown-ish text with single-brace placeholders. ``{title}`` / ``{summary}`` are the
+*effective* values (translated when available); ``original_*`` / ``translated_*`` are
+always literal. ``{{`` / ``}}`` emit literal braces and a literal ``\n`` is normalized
+to a newline at storage time.
 
-Semantics (all pinned by tests):
+Unknown placeholders are rejected by ``validate_template`` at set time but pass through
+verbatim at render time. A line whose known placeholders ALL resolve empty is dropped;
+partially-resolved lines stay. Runs of 3+ newlines collapse and the result is trimmed.
 
-- ``{title}`` / ``{summary}`` are the *effective* values — translated
-  when a translation exists, original otherwise. The ``original_*`` /
-  ``translated_*`` variants are always literal, so a bilingual layout is
-  ``{translated_title}`` + ``{original_title}``.
-- Literal ``\\n`` (as typed in Discord's single-line option box) is
-  normalized to a real newline before storage.
-- ``{{`` and ``}}`` produce literal braces.
-- Unknown word-shaped placeholders are rejected at *set* time
-  (`validate_template`) but pass through verbatim at *render* time —
-  a stored template never breaks delivery (same fail-open philosophy
-  as stored filter regexes).
-- A line that contains at least one known placeholder where ALL of them
-  resolved empty is dropped entirely — ``🔗 {url}`` never renders as a
-  dangling ``🔗``. Lines whose placeholders partially resolve are kept.
-- Runs of 3+ newlines collapse to a blank line; the result is trimmed.
-
-This module is a stateless primitive: it knows nothing about Message or
-the ORM. Callers pass a plain name→value mapping (see
-``Message.to_template_values`` in adapters/base.py, pinned to
-PLACEHOLDERS by test).
+Stateless: callers pass a plain name->value mapping (``Message.to_template_values``).
 """
 
 import re

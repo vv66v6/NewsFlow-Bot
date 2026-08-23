@@ -40,12 +40,9 @@ REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
 # read (and feedparser parse) an unbounded amount of memory.
 MAX_FEED_SIZE_BYTES = 5 * 1024 * 1024
 
-# Follow at most this many HTTP redirects. Each hop is re-validated against the
-# SSRF allow-list (validate_feed_url) before we connect: aiohttp's default
-# redirect following would otherwise chase a Location header into a private /
-# loopback / cloud-metadata address even though the *initial* URL was vetted.
-# Feeds legitimately redirect (http->https, FeedBurner, CDNs), so we follow
-# rather than reject — but only to targets that pass the same validation.
+# Max redirect hops. Every hop is re-validated by validate_feed_url before we
+# connect: aiohttp's default following would chase a Location header into a
+# private / loopback / metadata address even when the initial URL was vetted.
 MAX_REDIRECTS = 5
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
@@ -246,10 +243,9 @@ class FeedFetcher:
 
                     content = raw.decode(response.charset or "utf-8", errors="replace")
 
-                    # JSON Feed (jsonfeed.org): feedparser only parses XML, so
-                    # detect and map it ourselves. Detection is conservative
-                    # (official content-type or a sniff for the jsonfeed.org
-                    # version marker), so XML feeds never enter this branch.
+                    # JSON Feed: feedparser only parses XML, so detect and map it here. Detection is
+                    # conservative (official content-type or a jsonfeed.org version marker) so XML
+                    # never enters this branch.
                     json_feed = self._parse_json_feed(content, response.content_type, url)
                     if json_feed is not None:
                         json_entries, json_title = json_feed
@@ -264,10 +260,9 @@ class FeedFetcher:
 
                     feed = feedparser.parse(content)
 
-                    # Check for parse errors. If the body was actually an HTML
-                    # page advertising a feed (<link rel="alternate">, which
-                    # feedparser surfaces in feed.feed.links), hand those back
-                    # so add_feed can resolve and retry the real feed URL.
+                    # If the body was an HTML page advertising a feed (<link rel="alternate">, which
+                    # feedparser surfaces in feed.feed.links), hand those back so add_feed can
+                    # resolve and retry the real URL.
                     if feed.bozo and not feed.entries:
                         error_msg = str(feed.bozo_exception)
                         logger.warning(f"Failed to parse {url}: {error_msg}")

@@ -308,10 +308,8 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     url = args[0]
     user_id = str(user.id)
-    # Record the forum topic the command ran in so entries deliver there.
-    # is_topic_message guard: plain reply threads also carry a
-    # message_thread_id and must NOT be recorded. Channel-bound calls come
-    # from private chats, where is_topic_message is never set.
+    # Record the forum topic so entries deliver there. is_topic_message guards it:
+    # plain reply threads also carry message_thread_id and must NOT be recorded.
     thread_id = msg.message_thread_id if msg.is_topic_message else None
 
     # Send processing message
@@ -341,10 +339,9 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             name=f"preview:telegram:{result.subscription.id}",
         )
 
-    # Escape everything user-/feed-controlled: a title containing "&" or a
-    # URL with a query string would otherwise make Telegram reject the HTML
-    # parse — leaving the user stuck on "Adding feed..." although the
-    # subscription actually succeeded.
+    # Escape everything user-/feed-controlled: an "&" in a title or a query string in
+    # a URL makes Telegram reject the HTML parse, stranding the user on "Adding
+    # feed..." even though the subscription succeeded.
     if result.success:
         assert result.feed is not None  # success guarantees a resolved feed
         feed_title = _escape_html(result.feed.title or url)
@@ -402,7 +399,28 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 def _escape_html(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # `"` must be escaped too: several call sites interpolate into
+    # href="..." attributes, where a raw quote in a feed URL would break
+    # the attribute and make Telegram reject the whole message.
+    return (
+        text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    )
+
+
+def _parse_on_off(raw: str) -> bool | None:
+    """Strict boolean argument parser for toggle commands.
+
+    Only explicit forms are accepted; anything else returns None so the
+    caller can show usage. The permissive predecessor treated every
+    unrecognized word as False — a typo like "onn" silently DISABLED the
+    setting instead of erroring.
+    """
+    value = raw.strip().lower()
+    if value in ("on", "true", "yes", "1", "enable", "enabled"):
+        return True
+    if value in ("off", "false", "no", "0", "disable", "disabled"):
+        return False
+    return None
 
 
 def _is_thread_gone(e: Exception) -> bool:
@@ -433,10 +451,9 @@ def _clip(text: str, limit: int) -> str:
 
 def _format_sub_line(sub: Subscription) -> str:
     feed = sub.feed
-    # Clip BEFORE escaping so an entity can't be cut in half. Bounds matter:
-    # feed.title is up to 512 chars and feed.url up to 2048 — unclipped, a
-    # page of those would blow Telegram's 4096-char message cap and the whole
-    # /list would 400. The full URL stays available via /export (OPML).
+    # Clip BEFORE escaping so an entity cannot be cut in half. feed.title is up to
+    # 512 chars and feed.url up to 2048; unclipped, one page blows the 4096 cap and
+    # the whole /list 400s. Full URLs stay available via /export (OPML).
     title = _escape_html(_clip(feed.title or "Untitled", 80))
     # target_language is stored verbatim from user input — unescaped, a value
     # like `<b` breaks the HTML parse for every subsequent /list in the chat.
@@ -448,10 +465,9 @@ def _format_sub_line(sub: Subscription) -> str:
     return f"<b>{title}</b> · {meta}\n{_escape_html(_clip(feed.url, 200))}"
 
 
-# Telegram rejects messages over 4096 chars. Pages are packed greedily by
-# character budget (with LIST_PAGE_SIZE as a secondary item cap), so a page
-# can never exceed the limit even with worst-case escaped titles/URLs. The
-# budget leaves headroom for the header line.
+# Pages are packed greedily by character budget (LIST_PAGE_SIZE is a secondary
+# item cap) so a page can never exceed Telegram's 4096 even with worst-case
+# escaped titles/URLs. The budget leaves headroom for the header line.
 _LIST_CHAR_BUDGET = 3500
 
 
@@ -563,15 +579,9 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
-# --- /manage: per-feed inline actions (no URL retyping) ---------------------
-#
-# Callback data formats (Telegram caps callback_data at 64 bytes, so views
-# carry the subscription id, never the URL):
-#   mg:p:<page>[:target]                 manage list page
-#   mg:v:<sub_id>:<page>[:target]        one feed's action view
-#   mg:a:<action>:<sub_id>:<page>[:target]  action: pause|resume|sil0|sil1|rm|rmc
-# `target` is the -100… channel id when the panel was opened via the
-# private-chat channel binding (/manage @channel).
+# --- /manage: per-feed inline actions -----------------------------------------
+# callback_data is capped at 64 bytes, so views carry the subscription id, never
+# the URL. Format: mg:p / mg:v / mg:a, with an optional trailing channel target.
 
 MANAGE_PAGE_SIZE = 8
 
@@ -1063,6 +1073,8 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             return
 
+        # Session 1: load config + generate digest text. Closes before the Telegram IO so
+        # no pooled connection is held across a multi-second round-trip.
         async with session_factory() as session:
             repo = ChannelDigestRepository(session)
             config = await repo.get("telegram", chat_id)
@@ -1070,31 +1082,51 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await msg.reply_text("No digest configured. Use /digest enable first.")
                 return
 
+            config_id = config.id
+            prior_pin_id = config.last_pinned_message_id
+
             service = DigestService(session, summarizer)
             now = datetime.now(UTC)
             result = await service.generate(config, now=now)
-            if result is None:
-                await msg.reply_text("No articles in the current window — nothing to summarize.")
-                return
-            if not result.success:
-                await msg.reply_text(f"❌ Digest generation failed: {result.error}")
-                return
 
-            dispatcher = get_dispatcher()
-            adapter = dispatcher._adapters.get("telegram")
-            if adapter is None:
-                await msg.reply_text("Telegram adapter not registered yet — try again.")
-                return
-            chunks, new_pin_id = await dispatcher.deliver_digest(
-                adapter,
-                chat_id,
-                dispatcher.apply_digest_header(result.text, "telegram"),
-                chunk_size=3800,
-                prior_pin_id=config.last_pinned_message_id,
-            )
-            if chunks:
-                await repo.mark_delivered(config.id, now, pinned_message_id=new_pin_id)
+        if result is None:
+            await msg.reply_text("No articles in the current window — nothing to summarize.")
+            return
+        if not result.success:
+            await msg.reply_text(f"❌ Digest generation failed: {result.error}")
+            return
+
+        # Phase 2: deliver to the chat — no session held.
+        dispatcher = get_dispatcher()
+        adapter = dispatcher._adapters.get("telegram")
+        if adapter is None:
+            await msg.reply_text("Telegram adapter not registered yet — try again.")
+            return
+        chunks, new_pin_id = await dispatcher.deliver_digest(
+            adapter,
+            chat_id,
+            dispatcher.apply_digest_header(result.text, "telegram"),
+            chunk_size=3800,
+            prior_pin_id=prior_pin_id,
+        )
+        if not chunks:
+            await msg.reply_text("❌ Digest generated but delivery failed.")
+            return
+
+        # Session 2: persist the delivery mark, kept tiny so it does not contend with the
+        # dispatch loop's long write transaction. The digest is already in the chat, so
+        # a failed mark surfaces a warning rather than pretending nothing happened.
+        try:
+            async with session_factory() as session:
+                repo = ChannelDigestRepository(session)
+                await repo.mark_delivered(config_id, now, pinned_message_id=new_pin_id)
                 await session.commit()
+        except Exception:
+            logger.exception(f"Failed to mark digest delivered for telegram/{chat_id}")
+            await msg.reply_text(
+                "⚠️ Digest delivered, but recording the delivery failed — "
+                "the next scheduled run may resend it."
+            )
         return
 
     if sub == "enable":
@@ -1573,7 +1605,14 @@ async def settrans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     url = args[0]
-    enabled = args[1].lower() in ("on", "true", "yes", "1", "enable", "enabled")
+    enabled = _parse_on_off(args[1])
+    if enabled is None:
+        await msg.reply_text(
+            f"❌ Expected on or off, got <code>{_escape_html(args[1])}</code>.\n"
+            f"Example: /settrans https://example.com/feed off",
+            parse_mode="HTML",
+        )
+        return
 
     if enabled and not get_settings().can_translate():
         await msg.reply_text(
@@ -1619,7 +1658,14 @@ async def silent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    enabled = args[0].lower() in ("on", "true", "yes", "1", "enable", "enabled")
+    enabled = _parse_on_off(args[0])
+    if enabled is None:
+        await msg.reply_text(
+            f"❌ Expected on or off, got <code>{_escape_html(args[0])}</code>.\n"
+            f"Example: /silent on",
+            parse_mode="HTML",
+        )
+        return
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -1655,7 +1701,14 @@ async def setsilent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     url = args[0]
-    enabled = args[1].lower() in ("on", "true", "yes", "1", "enable", "enabled")
+    enabled = _parse_on_off(args[1])
+    if enabled is None:
+        await msg.reply_text(
+            f"❌ Expected on or off, got <code>{_escape_html(args[1])}</code>.\n"
+            f"Example: /setsilent https://example.com/feed on",
+            parse_mode="HTML",
+        )
+        return
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -1691,7 +1744,14 @@ async def setdisplay_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     url = args[0]
-    enabled = args[2].lower() in ("on", "true", "yes", "1", "enable", "enabled")
+    enabled = _parse_on_off(args[2])
+    if enabled is None:
+        await msg.reply_text(
+            f"❌ Expected on or off, got <code>{_escape_html(args[2])}</code>.\n"
+            f"Example: /setdisplay https://example.com/feed summary off",
+            parse_mode="HTML",
+        )
+        return
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -2009,7 +2069,14 @@ async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await msg.reply_text("Usage: /translate <on/off>")
         return
 
-    enabled = args[0].lower() in ("on", "true", "yes", "1")
+    enabled = _parse_on_off(args[0])
+    if enabled is None:
+        await msg.reply_text(
+            f"❌ Expected on or off, got <code>{_escape_html(args[0])}</code>.\n"
+            f"Example: /translate on",
+            parse_mode="HTML",
+        )
+        return
 
     settings = get_settings()
     if enabled and not settings.can_translate():
@@ -2123,10 +2190,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             page = int(parts[1])
         except (ValueError, IndexError):
             page = 1
-        # Optional third segment: the bound channel id a private-chat
-        # /list @channel targeted. Validated by shape; the buttons only
-        # exist in the DM of someone who passed the admin check at /list
-        # time, and the view is display-only.
+        # Optional third segment: the channel id a private-chat /list @channel targeted.
+        # Validated by shape only — the buttons live in the DM of someone who already
+        # passed the admin check, and the view is display-only.
         target = parts[2] if len(parts) > 2 and re.fullmatch(r"-100\d+", parts[2]) else None
         text, keyboard = await _render_list(target or str(chat.id), page, target)
         from telegram.error import BadRequest
@@ -2344,10 +2410,16 @@ class TelegramAdapter(BaseAdapter):
         global _adapter
         _adapter = self
 
-        # AIORateLimiter transparently queues send_message calls to stay
-        # inside Telegram's 30/s global, 1/s per-chat, and 20/min per-group
-        # broadcast limits. Needs python-telegram-bot[rate-limiter].
-        self.app = Application.builder().token(self.token).rate_limiter(AIORateLimiter()).build()
+        # AIORateLimiter queues sends inside Telegram's 30/s global, 1/s per-chat and
+        # 20/min per-group limits; needs python-telegram-bot[rate-limiter].
+        # job_queue(None): periodic work runs on the dispatcher's own asyncio loops.
+        self.app = (
+            Application.builder()
+            .token(self.token)
+            .rate_limiter(AIORateLimiter())
+            .job_queue(None)
+            .build()
+        )
 
         # Register handlers
         self.app.add_handler(CommandHandler("start", start_command))
@@ -2438,11 +2510,9 @@ class TelegramAdapter(BaseAdapter):
             # "PEER_ID_INVALID" = same, newer MTProto phrasing.
             return "chat not found" in msg or "peer_id_invalid" in msg
         if isinstance(e, Forbidden):
-            # Standard phrasings from Bot API:
-            #   "Forbidden: bot was kicked from the supergroup chat"
-            #   "Forbidden: bot was blocked by the user"
-            #   "Forbidden: bot is not a member of the channel chat"
-            #   "Forbidden: user is deactivated"  (account deleted)
+            # Standard Bot API phrasings for a permanently gone channel: kicked from the
+            # supergroup / blocked by the user / not a member of the channel chat /
+            # user is deactivated.
             return (
                 "was kicked" in msg
                 or "was blocked" in msg
@@ -2476,17 +2546,43 @@ class TelegramAdapter(BaseAdapter):
         try:
             if message.template_text is not None:
                 await self._send_template_message(
-                    channel_id, message.template_text, message.thread_id
+                    channel_id,
+                    message.template_text,
+                    message.thread_id,
+                    show_preview=message.show_image,
                 )
                 return True
             text = self._format_message(message)
-            await self.app.bot.send_message(
-                chat_id=int(channel_id),
-                text=text,
-                parse_mode="HTML",
-                disable_web_page_preview=False,
-                message_thread_id=message.thread_id,
-            )
+            # show_image=False maps to "no link preview": Telegram has no
+            # separate image attachment — the preview card IS the image
+            # surface (/setdisplay <url> image off).
+            disable_preview = not message.show_image
+            from telegram.error import BadRequest
+
+            try:
+                await self.app.bot.send_message(
+                    chat_id=int(channel_id),
+                    text=text,
+                    parse_mode="HTML",
+                    disable_web_page_preview=disable_preview,
+                    message_thread_id=message.thread_id,
+                )
+            except BadRequest as e:
+                # Deterministic rejection of OUR rendering (entity blind spot) would retry
+                # forever: the entry never marks sent and every cycle re-fails. Degrade to
+                # plain text, which the DB column caps keep under 4096.
+                if "parse entities" not in str(e).lower():
+                    raise
+                logger.warning(
+                    f"Entry HTML rejected by Telegram for {channel_id}; "
+                    f"falling back to plain text: {e}"
+                )
+                await self.app.bot.send_message(
+                    chat_id=int(channel_id),
+                    text=self._format_message_plain(message),
+                    disable_web_page_preview=disable_preview,
+                    message_thread_id=message.thread_id,
+                )
             return True
         except Exception as e:
             if message.thread_id is not None and _is_thread_gone(e):
@@ -2623,6 +2719,16 @@ class TelegramAdapter(BaseAdapter):
         from telegram.error import BadRequest
 
         html = markdown_to_telegram_html(text)
+        if len(html) > 4096:
+            # Escaping (& -> &amp;) can push a 3800-char pre-escape chunk past the hard cap.
+            # The raw chunk always fits — send it plain rather than let a deterministic
+            # "message is too long" drop it.
+            plain: TelegramMessage = await self.app.bot.send_message(
+                chat_id=int(channel_id),
+                text=text,
+                disable_web_page_preview=True,
+            )
+            return plain
         try:
             sent: TelegramMessage = await self.app.bot.send_message(
                 chat_id=int(channel_id),
@@ -2645,16 +2751,23 @@ class TelegramAdapter(BaseAdapter):
         return sent
 
     async def _send_template_message(
-        self, channel_id: str, template_text: str, thread_id: int | None = None
+        self,
+        channel_id: str,
+        template_text: str,
+        thread_id: int | None = None,
+        *,
+        show_preview: bool = True,
     ) -> None:
         """Send a template-rendered entry: Markdown → Telegram HTML with a
         plain-text fallback when Telegram rejects the entities. Link
-        previews stay ON, matching the default entry layout. Raises on
-        chat-level failures so send_message's gone/migrated/topic handling
-        applies unchanged."""
+        previews stay ON by default, matching the default entry layout;
+        show_image=False turns them off just like the default layout does.
+        Raises on chat-level failures so send_message's gone/migrated/topic
+        handling applies unchanged."""
         assert self.app is not None
         from telegram.error import BadRequest
 
+        disable_preview = not show_preview
         text = template_text
         if len(text) > 3500:
             text = text[:3499] + "…"
@@ -2665,7 +2778,7 @@ class TelegramAdapter(BaseAdapter):
             await self.app.bot.send_message(
                 chat_id=int(channel_id),
                 text=text,
-                disable_web_page_preview=False,
+                disable_web_page_preview=disable_preview,
                 message_thread_id=thread_id,
             )
             return
@@ -2674,7 +2787,7 @@ class TelegramAdapter(BaseAdapter):
                 chat_id=int(channel_id),
                 text=html,
                 parse_mode="HTML",
-                disable_web_page_preview=False,
+                disable_web_page_preview=disable_preview,
                 message_thread_id=thread_id,
             )
         except BadRequest as e:
@@ -2687,7 +2800,7 @@ class TelegramAdapter(BaseAdapter):
             await self.app.bot.send_message(
                 chat_id=int(channel_id),
                 text=text,
-                disable_web_page_preview=False,
+                disable_web_page_preview=disable_preview,
                 message_thread_id=thread_id,
             )
 
@@ -2707,42 +2820,76 @@ class TelegramAdapter(BaseAdapter):
             logger.warning(f"Telegram unpin failed for message {message_id} in {channel_id}: {e}")
             return False
 
-    def _format_message(self, message: Message) -> str:
-        """Format a Message for Telegram."""
-        title = self._escape_html(message.display_title)
-        summary = message.display_summary
+    # Telegram's hard cap per text message. A longer send fails with a
+    # deterministic BadRequest that would retry every cycle forever, so
+    # _format_message enforces the budget at build time.
+    _TG_TEXT_LIMIT = 4096
 
-        # Truncate summary
+    def _format_message(self, message: Message) -> str:
+        """Format a Message for Telegram, guaranteed ≤ _TG_TEXT_LIMIT.
+
+        HTML-escaping can multiply text length (`&` → `&amp;`), so with
+        column-cap-sized title/summary/link the naive layout can exceed
+        11k chars. Shrink strategy: drop the summary, then clip the title;
+        the last-resort hard slice is caught by send_message's plain-text
+        fallback if it ever lands mid-entity.
+        """
+        summary = message.display_summary
         if summary and len(summary) > 500:
             summary = summary[:497] + "..."
-
-        parts = [
-            f"<b>{title}</b>",
-            "",
-        ]
-
-        if summary:
-            parts.append(self._escape_html(summary))
-            parts.append("")
 
         # Link needs HTML-escape too: RSS URLs often contain `&` in query
         # strings, which Telegram's HTML parser rejects as an invalid entity
         # and fails the whole message send.
-        parts.extend(
-            [
-                f'🔗 <a href="{self._escape_html(message.link)}">Read more</a>',
-                f"📰 {self._escape_html(message.source)}",
-            ]
-        )
+        footer = [
+            f'🔗 <a href="{self._escape_html(message.link)}">Read more</a>',
+            f"📰 {self._escape_html(message.source)}",
+        ]
+        if message.published_at:
+            footer.append(f"🕐 {message.published_at.strftime('%Y-%m-%d %H:%M')}")
 
+        def compose(title_raw: str, summary_raw: str | None) -> str:
+            parts = [f"<b>{self._escape_html(title_raw)}</b>", ""]
+            if summary_raw:
+                parts.append(self._escape_html(summary_raw))
+                parts.append("")
+            parts.extend(footer)
+            return "\n".join(parts)
+
+        text = compose(message.display_title, summary)
+        if len(text) <= self._TG_TEXT_LIMIT:
+            return text
+        text = compose(message.display_title, None)
+        for title_cap in (512, 256, 128):
+            if len(text) <= self._TG_TEXT_LIMIT:
+                return text
+            text = compose(message.display_title[:title_cap] + "…", None)
+        if len(text) > self._TG_TEXT_LIMIT:
+            # Only reachable with a pathological escape-heavy link; the
+            # slice may cut a tag, which the plain-text fallback absorbs.
+            text = text[: self._TG_TEXT_LIMIT - 1] + "…"
+        return text
+
+    def _format_message_plain(self, message: Message) -> str:
+        """Plain-text rendition (no parse_mode) for the entity-rejection
+        fallback. No escaping — so no length inflation: the ingest column
+        caps (title 1024 / link 2048 / summary 500 here) keep this under
+        the 4096 limit structurally."""
+        parts = [message.display_title, ""]
+        summary = message.display_summary
+        if summary:
+            parts.append(summary[:497] + "..." if len(summary) > 500 else summary)
+            parts.append("")
+        parts.append(f"🔗 {message.link}")
+        parts.append(f"📰 {message.source}")
         if message.published_at:
             parts.append(f"🕐 {message.published_at.strftime('%Y-%m-%d %H:%M')}")
-
         return "\n".join(parts)
 
     def _escape_html(self, text: str) -> str:
-        """Escape HTML special characters."""
-        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        """Escape HTML special characters (module-level helper, incl. quotes
+        for href attribute safety)."""
+        return _escape_html(text)
 
 
 # Global app instance

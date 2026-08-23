@@ -291,7 +291,7 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 | `FETCH_INTERVAL_MINUTES` | `60` | 抓取循环间隔 |
 | `FEED_MAX_CONCURRENT` | `10` | 每轮并发抓取的最大 feed 数（限流信号量 + HTTP 连接数）；feed 多且主机快可调高 |
 | `CLEANUP_INTERVAL_HOURS` | `24` | 清理循环间隔 |
-| `ENTRY_RETENTION_DAYS` | `7` | 保留多少天的 FeedEntry（按 `created_at`）|
+| `ENTRY_RETENTION_DAYS` | `10` | 保留多少天的 FeedEntry（按 `created_at`）。默认留了 3 天余量给 weekly digest 的 7 天输入窗口——设回 ≤7 会让清理在周报生成前删掉窗口最早的文章 |
 | `SENT_ENTRY_RETENTION_DAYS` | `90` | 保留多少天的 `SentEntry`（去重信号；必须远长于 `ENTRY_RETENTION_DAYS`，否则源 feed 重新 serve 同 GUID 会被当作新条目重复推送）|
 | `MAX_ENTRY_PUBLISH_AGE_DAYS` | `14` | dispatch 时跳过 `published_at` 早于此值的条目，防止 feed 突然吐 archive 老文章。`published_at IS NULL` 总是放行；`0` = 禁用此过滤 |
 
@@ -312,7 +312,7 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 | `DIGEST_MAX_INPUT_CHARS_PER_ARTICLE` | `300` | 单篇文章喂给 LLM 时的字符上限 |
 | `DIGEST_CHECK_INTERVAL_MINUTES` | `5` | 调度循环的检查间隔 |
 | `DIGEST_SYSTEM_PROMPT` | 空 | 日报 prompt 覆盖（见 §3.3） |
-| `DIGEST_MENTION_ON_DELIVERY` | `false` | 投递 digest 时加一行可见抬头，Discord 端附带 `@here`，让定时日报在刷屏频道里不被淹没。**默认关**，老部署升级后不会突然开始 ping 人。Discord 要真正响铃需要 bot 在该频道有 "Mention Everyone" 权限，没有则 `@here` 只显示为文字；其他平台只加抬头 |
+| `DIGEST_MENTION_ON_DELIVERY` | `false` | 投递 digest 时加一行可见抬头，Discord 端附带 `@here`，让定时日报在刷屏频道里不被淹没。**默认关**，老部署升级后不会突然开始 ping 人。Discord 端应用会放行这个代码加的 `@here`（同时把 LLM 正文里可能出现的 @everyone/@here 中和掉，只有抬头能响铃）；此外 bot 还需要该频道的 "Mention Everyone" 权限，缺权限时 Discord 会把 `@here` 显示为纯文字。其他平台只加抬头 |
 | `DIGEST_AUTO_PIN` | `false` | 每次投递自动置顶本次 digest 并取消上一次的置顶，让频道置顶列表恒为"最新一期"。需要 Discord 的 "Manage Messages" / Telegram 管理员权限。置顶失败（缺权限、到 50 条上限）优雅降级：digest 照发、旧置顶保留、日志出 warning。webhook 目的地静默跳过 |
 
 ### 2.7 REST API（可选）
@@ -663,7 +663,7 @@ def _to_discord_text(text: str) -> WireRequest:
 
 ## 四B、非 RSS 信息源（sources.yaml）
 
-§四 的 webhook 是**出站**（把条目推给别人）。本节是**入站**：把 RSS 之外的东西变成源。和 `webhooks.yaml` 一样**声明式**——`config/sources.yaml`（Docker 部署；裸机默认 `data/sources.yaml`）存在即启用，每次启动幂等同步进 DB（创建 / 更新 / 删除源与订阅）。完整示例见 [`samples/sources.example.yaml`](samples/sources.example.yaml)。
+§四 的 webhook 是**出站**（把条目推给别人）。本节是**入站**：把 RSS 之外的东西变成源。和 `webhooks.yaml` 一样**声明式**——`config/sources.yaml`（Docker 部署；裸机默认 `data/sources.yaml`）存在即启用，每次启动幂等同步进 DB（创建 / 更新 / 删除源与订阅）。完整示例见 [`samples/sources.example.yaml`](../samples/sources.example.yaml)。
 
 > **安全边界**：同步只动「非 RSS 类型的 feed」和「`platform_user_id=source-yaml` 的订阅」。你用命令建的 RSS 订阅永不受影响。
 
@@ -797,7 +797,7 @@ curl -X POST http://<host>:8000/api/ingest/ci-events \
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/health` | 服务状态 |
-| `GET` | `/ready` | 就绪检查（含 DB 连接） |
+| `GET` | `/ready` | 就绪检查（含 DB 连接）；未就绪返回 **503**（编排系统按状态码摘流量） |
 | `GET` | `/live` | 存活探针（K8s 友好） |
 | `GET` | `/metrics` | **Prometheus 指标**：调度轮次/发送量/错误计数器 + feed/订阅/destination/digest 数量 gauge（文本格式，零依赖手写渲染） |
 | `GET` | `/api/feeds` | 列全部 feed |
@@ -827,7 +827,7 @@ curl -X POST http://<host>:8000/api/ingest/ci-events \
 ### 7.1 Compose Profiles
 
 ```bash
-# 加 Redis（多实例或想让翻译缓存跨重启）
+# 加 Redis（想让翻译缓存跨重启时用；注意本项目定位单实例，Redis 不提供多副本调度安全）
 docker compose -f docker/docker-compose.yml --profile with-redis up -d
 
 # 加 Postgres（订阅超 10 万条再考虑；SQLite 之前都够用）
@@ -849,6 +849,9 @@ DATABASE_URL=postgresql+asyncpg://newsflow:newsflow@postgres/newsflow
 （Redis 同理：`CACHE_BACKEND=redis` + `REDIS_URL=redis://redis:6379/0`。）
 
 ### 7.2 systemd + venv（无 Docker）
+
+需要 **Python 3.11–3.13**。先确认 `python3 --version` ——Ubuntu 22.04 自带的是 3.10，不够；
+用 24.04+/Debian 12+，或先装 deadsnakes 等新版本并把下面的 `python3` 换成对应命令名。
 
 ```bash
 sudo apt install -y git python3 python3-venv python3-pip libxml2-dev libxslt1-dev build-essential
@@ -911,12 +914,19 @@ docker compose -f docker/docker-compose.yml up -d   # 用新镜像重建容器
 ### 7.4 备份
 
 ```bash
-# SQLite 模式：单文件备份
+# SQLite 模式：先停容器再拷贝。数据库开着 WAL，运行中直接 docker cp
+# 可能拿到缺最近写入（WAL 未 checkpoint）甚至撕裂的快照。
+docker compose -f docker/docker-compose.yml stop newsflow
 docker cp newsflow-bot:/app/data/newsflow.db ./backup-$(date +%F).db
+docker compose -f docker/docker-compose.yml start newsflow
 
-# Postgres 模式
+# Postgres 模式（pg_dump 自带一致性，无需停机）
 docker compose -f docker/docker-compose.yml exec postgres pg_dump -U newsflow > backup-$(date +%F).sql
 ```
+
+> 不能接受几秒停机的话，用 SQLite 在线备份代替 `stop`+`cp`：
+> `docker compose -f docker/docker-compose.yml exec newsflow python -c "import sqlite3; sqlite3.connect('/app/data/newsflow.db').execute(\"VACUUM INTO '/app/data/backup.db'\")"`
+> 然后 `docker cp` 出 `backup.db`（记得删除容器内的副本）。
 
 ### 7.5 健康检查详解
 
@@ -986,8 +996,8 @@ docker compose -f docker/docker-compose.yml logs -f newsflow    # 观察新值�
 
 - 新加 `TELEGRAM_TOKEN`（从单平台变双平台）：`up -d` 后 Telegram 也会启动，第一次要等 slash command 同步
 - 新开 `TRANSLATION_ENABLED=true` + `OPENAI_API_KEY=xxx`：镜像里 `[all]` extras 已含 openai 包，直接 `up -d` 就行
-- `API_ENABLED=false → true`：FastAPI 会启动；写端点需 `API_KEY`（未配则一律 503，fail-closed），读端点开放；CORS 仍允许所有来源，公网暴露建议再套 nginx 反代
-- `API_PORT`：Docker 下容器内端口固定 8000（compose 钉死，避免映射错位），`.env` 里改它不生效——想换宿主机端口用 `API_PORT=9000 docker compose -f docker/docker-compose.yml up -d`（shell 变量控制端口映射）。裸机运行则 `.env` 的 `API_PORT` 正常生效
+- `API_ENABLED=false → true`：FastAPI 会启动；写端点需 `API_KEY`（未配则一律 503，fail-closed），读端点开放；CORS 默认不发（`API_CORS_ORIGINS` 白名单开启），公网暴露建议再套 nginx 反代
+- `API_PORT`：Docker 下容器内端口固定 8000（compose 钉死，避免映射错位），`.env` 里改它不生效——想换宿主机端口用 `API_PORT=9000 docker compose -f docker/docker-compose.yml up -d`（shell 变量控制端口映射）。裸机运行则 `.env` 的 `API_PORT` 正常生效。compose 默认把端口发布在 `127.0.0.1`（VPS 上 0.0.0.0 就是公网）；要远程访问请上反向代理（走 compose 网络，不需要宿主端口），或自行改 compose 里的绑定地址
 - `config/webhooks.yaml` / `config/sources.yaml` 内容变化：**不用重启**——两个 YAML 支持热重载：`POST /api/admin/reload`（带 API_KEY；需 `API_ENABLED=true`），或对进程发 `SIGHUP`（`docker kill -s HUP newsflow-bot` / `systemctl kill -s HUP newsflow`；仅 Linux）。重载跑的就是启动时那套幂等 sync + 刷新 webhook 目的地缓存；**文件解析失败时保持旧状态**（不像启动时直接中止），错误从 API 响应 / 日志返回。当然 `up -d` 重启也照样生效
 
 **需要换镜像**（仅改 `.env` 不够，得有新镜像才生效）：
@@ -1395,6 +1405,247 @@ egress 策略 / VPS 网络边界作为第二层防御。
 
 ---
 
+### 11.15 为什么 dispatch 的事务边界是"每订阅一提交"？
+
+一轮 dispatch 里有三处提交点，各自挡一种故障，**都不要合并成"轮尾一次提交"**：
+
+1. **抓取写入在进入订阅循环前先提交。** 在 SQLite 上这些写入持有单写锁，把它们带着未提交状态穿过整个循环，
+   会阻塞 webhook adapter 的熔断计数——那部分跑在**自己的 session / 连接**上，于是每次发送失败都要卡满 15 秒
+   busy-timeout，熔断器永远跳不了，每轮都拖死。先提交就放开了锁；feed 元数据（etag / backoff / last_fetched）
+   本来也该与发送结果无关地落盘。
+2. **每个订阅提交一次，而不是一轮结束提交一次。** 消息在 adapter 返回的那一刻就已经发出去了；
+   轮尾单次提交意味着任何后期失败（`SQLITE_BUSY`、崩溃、部署重启）会回滚**整轮**的已发标记，
+   下一轮把每一条消息重发一遍。逐订阅提交把重发窗口限制在一个订阅内（≤ 每轮条数上限），
+   顺带在订阅之间释放写锁，长轮次里 slash 命令不会被饿死。
+3. **轮尾仍有一次提交**，理由同第 1 条。
+
+> 提交后继续使用 ORM 对象是安全的：session factory 设了 `expire_on_commit=False`。
+
+### 11.16 为什么订阅循环要遍历 id 快照并在每次迭代顶部重新查？
+
+因为**回滚会让 session 里所有 ORM 实例失效**——与 `expire_on_commit=False` 无关。
+一旦某个订阅的提交失败触发回滚，下一次访问任何缓存对象的属性都会抛 `MissingGreenlet`，整轮剩余部分随之中断。
+遍历纯 id 快照、在循环顶部按 id 重新查一次，代价是每订阅一次带索引的 SELECT，
+换来的是每次迭代在回滚之后都能自愈。
+
+### 11.17 为什么每轮都要遍历订阅，而不是"本轮抓到新条目才发"？
+
+订阅可能**攒着上一轮没发出去的积压**——adapter 返回 False（Discord 权限抖动、网络打嗝）时会**故意不打已发标记**，留待重试。
+如果用"本轮有没有新条目"当门槛，这批积压就要一直等到**某个** feed 恰好更新才会被带出去；
+对一个安静的 feed 来说可能是好几天，早就越过发布时效截止线、被静默丢弃。
+
+代价很小：订阅没有待发内容时 `get_unsent_entries_for_subscription` 返回空列表，
+空闲一轮的成本就是每个活跃订阅一次带索引的 SELECT。
+
+### 11.18 频道失效的三种自愈
+
+- **本轮已确认失效的频道**：第一次 `ChannelGoneError` 已经用一条批量 UPDATE 把该频道所有订阅置为非活跃，
+  但那不会同步 identity map 里已加载的实例，重新查出来的行仍然是 `is_active=True`。
+  因此在内存里记一份"本轮已失效"集合跳过它们，省掉每个死频道每轮 N−1 次注定失败的 adapter 调用和 N−1 次空转 UPDATE。
+  下一轮 `get_all_active_subscriptions` 会在源头把它们滤掉。
+- **频道永久不可达**：停用该频道**所有**活跃订阅（一个频道通常挂着很多 feed），并关掉 digest 配置，
+  不再往这个死目标烧 API 调用。`WHERE is_active=True` 让重复调用天然幂等。
+- **论坛 topic 被删但聊天还在**：清掉 thread，让投递回落到频道默认视图。当前这条保持未发状态、下轮再出；
+  该批**剩余**条目已经按清空后的值构建，立刻就能投递。普通属性写入即可——逐订阅提交会持久化它，
+  回滚了下轮再自愈一次，幂等。
+
+### 11.19 翻译缓存只在"整条都成功"时才写库
+
+若只有标题翻好、摘要那次调用失败，**缓存半成品会把缺口冻住**：下次 dispatch 在方法顶部的早期缓存检查就短路了，
+摘要永远不会重试，哪怕 provider 已经恢复。留着不缓存，下次 dispatch 会重试，
+已经成功的那一半从服务层缓存里廉价取回。
+
+**同语言短路有两道**：脚本判定拦不住的（比如英文源、目标也是英文），由 provider 报告的 `source == target` 拦下——
+此时**丢弃 provider 的输出**而不是采纳一份"润色过的同语言翻译"，跳过摘要调用，并把原文写进缓存，
+让其他同目标语言的订阅在顶部那道检查就零调用短路。**`zh` 不走这条**：检测器只报裸 `ZH`，看不见简繁边界。
+
+### 11.20 未发条目为什么按最旧优先
+
+两个理由。**时序**：最新的文章应该落在聊天记录底部，而不是压在更旧的上面。
+**积压公平**：待发多于 `limit` 时，最新优先会让每轮的新条目永久挤掉更早的，直到它们被保留期静默清掉；
+最旧优先则是跨轮把积压排空。无日期的条目排在最前（无法判断新旧，宁可发也不要饿死），`id` 用来打破并列、保证确定性。
+
+### 11.21 入库去重要同时防"批内重复"
+
+一次抓取可能返回同一个 guid 两次——可能是源本身如此，也可能是 `FeedFetcher._parse_entry` 在条目没有
+id/guid/link 时退化使用 `"{title}-{published}"` 兜底 guid 所致。两行都插入会在 flush 时违反
+`(feed_id, guid)` 唯一索引，而那个 `IntegrityError` 会**毒化整个 dispatch 周期共用的 session**：
+其余每个 feed 的元数据 / backoff 更新、以及待写的 SentEntry 全部一起回滚。
+
+### 11.22 用户正则跑在 mrab `regex` 引擎上，且有超时
+
+用户模式**同步跑在 dispatch 循环的事件循环里**，而标准库 `re` 没有超时机制——
+一个灾难性回溯模式（`(a+)+$` 那一类）在测试中卡死过整个 bot。因此用户模式改用 mrab `regex` 编译：
+它直接化解常见的灾难性回溯形态，`timeout=` 兜住剩下的。命中超时的模式按**失败放行**跳过并告警，
+与"存储的模式非法"同一策略。**关键词匹配仍留在标准库 `re`** 上——那些模式是 `re.escape()` 过的字面量，不可能病态回溯。
+
+### 11.23 第三方 logger 被钉到 WARNING，是为了防泄密
+
+不只是降噪：`python-telegram-bot` 的每次 Bot API 调用都经由 httpx，而 httpx 的 INFO 请求行**把 bot token 带在 URL 路径里**；
+`aiosqlite` 在 DEBUG 会把每条 SQL 连同绑定参数一起打出来（webhook URL token、HMAC secret、存储的 API key）。
+把它们钉在 WARNING，即使应用本身跑在 DEBUG 也不会漏。要看 SQL 请显式用 `DB_ECHO`，
+**不要让它成为 `LOG_LEVEL=DEBUG` 的副作用**。
+
+> **附带一条**：json 模式下 `exc_info` 能渲染成 traceback，靠的是两条 processor 链共用同一个处理器——
+> configure 时它在 `except` 块仍然活跃的情况下解析 `exc_info=True`，在 `foreign_pre_chain` 里则格式化
+> `ProcessorFormatter` 从 `LogRecord` 上拷下来的那个具体元组。少了它，`JSONRenderer` 对标准库记录会退化成
+> `repr()`（打出 `<traceback object ...>`），对 structlog 事件则直接把栈丢掉。
+
+### 11.24 alembic 故意不调 `fileConfig`
+
+`main.py` 已经配好根 logger。`fileConfig(alembic.ini)` 即便带 `disable_existing_loggers=False`，
+仍会把根 logger 的 handler 与级别替换成 `alembic.ini` 里 `[logger_root]` 的值（`level=WARNING`），
+于是 `upgrade_to_head()` 之后发出的每条 INFO 日志被静默丢弃。
+alembic 自己的 logger（`alembic.runtime.migration` 等）照样向根 logger 传播，按 `main.py` 的格式打印。
+
+### 11.25 "摘要其实就是标题"的判定阈值
+
+把标题前缀从摘要里剥掉，看剩下什么。**剩余不足 30 字符**就判定它不是真摘要——
+阈值取 30 是为了让 `Fed cuts - CNBC 3 hours ago`（剥完约 25 字符）被丢弃，
+而 `Fed cuts to stave off inflation risk`（约 35 字符）留下。
+**含 CJK 的剩余部分改用 12 字符阈值**：中日韩每字符信息量约为拉丁文的三倍，30 个汉字已经是一整句带价格和日期的正文，
+是真增量而不是来源署名噪声。
+
+### 11.26 dispatch 轮次要串行化
+
+`ingest` 触发的轮次（push 源）与定时循环共用同一条路径。两轮交错会**双发**：
+两边都在对方打上已发标记之前读到了同一批未发条目。所以入口有一把锁把轮次串起来。
+
+### 11.27 轮尾那次提交是给"零订阅轮"兜底的
+
+`fetch_all_feeds` 写的 feed 元数据（`etag` / `last_modified` / `last_fetched_at` / `error_count` / `next_retry_at`）
+**必须在每个 feed 都返回 304 或没有新条目时照样落盘**。没有轮尾这次提交，`AsyncSession` 的上下文管理器会把它们回滚，
+静默废掉 ETag 缓存、指数退避、以及"连错 10 次自动停用"三件事。
+
+### 11.28 过滤在翻译与发送之前，且匹配**清洗后**的文本
+
+过滤放在（可能很贵的）翻译与发送路径之前；被过滤掉的条目标记为 processed，
+免得每轮 dispatch 重新判一遍。
+
+匹配对象是**清洗后**的 title + summary + content：用原始 markup 匹配时，排除词会在 URL 和标签属性上误命中，
+而正文对过滤器则完全不可见。
+
+### 11.29 静默模式仍然打已发标记
+
+静默模式不做即时推送，但仍以 `was_filtered=False` 标记为已发，让 digest 流水线经由 `SentEntry` 收得到它。
+这里也跳过翻译——digest 用的是原始标题/摘要，不必浪费 API 花销。
+`bypass_silent=True` 来自预览路径，让用户订阅时能收到一篇确认文章。
+
+### 11.30 Telegram 群升级为超级群的自愈
+
+群升级后频道仍在，但换了新的 chat id，旧 id 从此拒收一切发送。
+处置是把所有订阅与 digest 配置**重指到新 id**；尚未发送的条目（含当前这条）下一轮投到新地址。
+外层 `dispatch_once` 的提交负责持久化。
+
+### 11.31 标记失败必须中止整批
+
+一次失败的 mark/flush 很可能已经**毒化了事务**：这一批里后续每次标记都会跟着失败，
+而它们的消息**早已推送到平台**——每一条都是下一轮的确定重复。
+所以立刻停掉这一批；逐订阅提交路径会回滚，轮次从下一个订阅继续。
+
+另有一处配套：失效频道的跳过集合让"每频道每轮只告警一次"成为保证；
+`rowcount` 检查仍作为纵深防御保留，兜住不传集合的调用方（预览路径）。
+
+### 11.32 条目的翻译字段初始为空，不从缓存预填
+
+`FeedEntry` 上的翻译缓存是**该 feed 所有订阅共享的**。在这里预填，等于把某个频道碰巧最先缓存的译文，
+发给一个已经关掉翻译、或者目标语言根本不同的频道。只有翻译分支可以填这些字段——
+`_translate_entry` 会先确认缓存的语言确实等于本订阅的目标语言，才复用。
+
+**同语言短路第一道（免费）**：脚本判定已能确认文本就是目标语言。只对脚本唯一的语言生效（zh / ja / ko），
+且**绝不跨简繁边界**——目标 zh-TW、源是简体时，仍然要送给 provider。
+
+### 11.33 自定义模板用 trim 前的值渲染
+
+`{summary}` 与 `{image_url}` 因此总能解析到值——模板对自己的文本有完全权威，`show_summary` 被**有意忽略**
+（`show_image` 仍然管平台侧的图片附件）。渲染出错、或模板渲染成空，一律回落到默认排版：
+**一个坏模板绝不能弄丢一篇文章**。
+
+### 11.34 Digest 投递拆成三段 session
+
+每个频道一个新 session，一个频道失败不会毒化其他频道。三段拆分是为了**不把 session 攥在 LLM 调用和平台 IO 上**——
+那两段慢，攥着连接会让 `mark_delivered` 的 UPDATE 撞上 dispatch 循环的长写事务（`SQLITE_BUSY`）。
+
+1. **载配置 + 生成正文**（持 session）
+2. **投递到平台**（不持 session；Discord / Telegram IO 可能好几秒）。文本上限取 **1900** 字符，
+   同时满足 Discord 的约 2000 与 Telegram 的 4096。
+3. **写投递标记**（短 session）。这一步在锁压力下仍然失败时——digest 其实**已经发到频道里了**——
+   记日志然后继续；下一 tick 的 `is_due()` 会看到过期标记、可能重发一次，那比让循环崩掉好。
+
+**digest 目标频道消失时**：停掉 digest 配置**以及**所有仍指向该频道的活跃订阅。
+feed dispatch 路径本来也会处理它自己那部分，但这个 tick 可能跑在下一次 feed dispatch 之前，所以这里抄近路。
+
+### 11.35 Discord 侧的四条渲染与安全规则
+
+- **文章标题放进 embed 的 TITLE 字段（带 url），不放进 description 里的 Markdown 链接。**
+  title 字段**不做 Markdown 解析**，所以标题里含 `](` 的 feed 再也无法往 embed 里注入一个可点击链接——
+  那是一条钓鱼路径。Discord 把 title 限在 256 字符，在这里截断顺带避免超长标题让发送失败。
+  `url` 只在确实是 http(s) 链接时才设（Discord 拒收非 URL 的 embed url）。
+- **自定义模板走纯 content**（Discord 原生渲染 Markdown）。`show_image` 已由 dispatcher 作用在
+  `message.image_url` 上；仍有图时用一个**只含图片的 embed** 承载，让模板对文本保持完全权威。
+  配置的 mention 会前置，除非模板自己用 `{mention}` 放过了（那时渲染结果里已经逐字含有它）。
+- **默认不 ping**：客户端级 `AllowedMentions.none()` 是基线，任何发送要 ping 必须显式重新放行。
+  feed 的标题与摘要会流进模板路径的纯文本 content，所以一篇含 `@everyone` 的文章必须保持惰性；
+  `/feed mention` 投递按次放行、且只放行配置的那一个目标。
+- **只申请默认（非特权）intent**。本 bot 只有斜杠命令，app command 以 interaction 到达、不受任何 intent 约束；
+  申请 `message_content` 会白白逼每个部署者去 Developer Portal 打开特权 intent 开关，
+  而他们不知道要打开时进程会以 `PrivilegedIntentsRequired` 崩溃重启。
+
+### 11.36 重定向的每一跳都要重新过 SSRF 校验
+
+抓取最多跟随固定跳数的 HTTP 重定向，**每一跳在连接前都重新过一次 `validate_feed_url`**。
+aiohttp 默认的重定向跟随会顺着 `Location` 头追进私有网段 / 回环 / 云元数据地址——哪怕**最初**那个 URL 是验过的。
+feed 合法地会重定向（http→https、FeedBurner、CDN），所以策略是跟随而非拒绝，但只跟随同样通过校验的目标。
+
+### 11.37 模板、时区、Markdown 转换的三处刻意取舍
+
+**模板渲染一律 fail-open。** 未知的词形占位符在**设置时**被 `validate_template` 拒掉，但在**渲染时**原样透出——
+存下来的模板永远不会弄坏投递，与存储的过滤正则同一套哲学。
+另外「整行的已知占位符全部解析为空」时那一行整个丢弃（`🔗 {url}` 不会渲染成一个孤零零的 🔗），
+部分解析的行保留。`message_template` 是**无状态原语**，不认识 Message 也不认识 ORM，调用方传纯 name→value 映射。
+
+**时区只在配置时换算一次，锚定当天日期。** 数据库只存 UTC（`delivery_hour_utc` / `delivery_weekday`）。
+对有夏令时的时区，存下来的 UTC 小时反映的是**用户执行命令那一刻**的偏移——
+这是一处**有记录的简化**：跨过 DST 切换后投递会漂一个小时，直到用户重新设置。
+**不带区域的裸名（`PST`、`Singapore`）被有意拒收**：Telegram 命令行要把末尾 token 猜成语种码或时区，
+只有带斜杠的 IANA 名与偏移量形式才无歧义。
+
+**`telegram_markdown` 不是通用 Markdown 引擎。** 它只覆盖 digest 流水线实际会产出的那几种构造
+（粗体、ATX 标题、`[text](url)`、尖括号包的裸 URL），其余一律 HTML 转义，
+免得 Telegram 严格的 HTML 解析器因为一个游离的 `<` 或 `&` 拒收整条消息。
+未知构造以转义后的字面文本透出——**降级为可读，而不是让发送失败**；渲染结果仍被拒时，适配器再回落到纯文本。
+
+### 11.38 SSRF 校验挡不住 DNS rebinding
+
+`url_security` 拒绝非 http(s) scheme、拒绝私有 / 回环 / 链路本地 / 保留网段的 IP 字面量
+（`127.0.0.1`、`10/8`、`192.168/16`、`169.254.169.254`、`::1` 等），并限制 URL 长度。
+
+**它挡不住的**：一个在**抓取时**才解析到私有 IP 的主机名。DNS-rebinding 式的 SSRF 需要自定义 aiohttp connector，
+在 connect 之前把解析出的 IP 钉死。当前这一层依赖容器出网策略 / VPS 网络边界来兜——
+**部署到能访问内网的环境时，这条是你要自己补的**。
+
+### 11.39 关键词与正则的匹配语义
+
+一条规则收窄单个订阅实际收到的内容。字段共四个：**`include_keywords` / `include_regex`**（至少命中一条才留）与
+**`exclude_keywords` / `exclude_regex`**（命中任意一条就丢）；同一侧的关键词与正则二选一。
+**空规则匹配一切。** 规则以 JSON 存在 `Subscription.filter_rule` 上。
+
+**关键词（大小写不敏感）分两类，判据是「这个词是不是纯 ASCII 词字符」**：
+
+- **纯 ASCII 词字符**（字母 / 数字 / `_`，词组内允许单个空格）→ 按**词边界**匹配。
+  所以 `ai` 不会在 "brain" 或 "said" 上误命中。**只有 ASCII 词字符算边界**，
+  因此 `ai` 仍然命中中英混排的用法（"AI芯片"）。
+- **其他一切**（中日韩、含标点如 `c++`）→ 保持**子串**匹配。
+  CJK 没有词分隔符，子串**就是**那里的自然词语义。
+
+**正则**：整个 include/exclude 字段写成 `/pattern/` 时，它就是一条大小写不敏感的正则，而不是关键词列表——
+这样模式里的逗号不会和 CSV 语法打架（要表达「或」用 `|`）。模式在命令时校验；
+万一有非法模式进了存储，**失败放行**（记一条告警）而不是静默挡住投递。
+匹配跑在 mrab `regex` 引擎上并带单次超时，超时同样失败放行（见 §11.22）。
+
+**被匹配的文本是清洗后的** title + summary + content——dispatcher 先做 HTML 剥离再匹配，
+所以排除词不会在 URL 或标签属性上误命中（见 §11.28）。
+
 ## 十二、代码风格与约定
 
 ### 12.1 工具配置
@@ -1706,7 +1957,7 @@ results = await asyncio.gather(*[repo.do_something(session, x) for x in items])
    改用 §13.1 里的直调写法，三条都要过）。
 5. **新行为要有测试**：fix 要有回归测试；feature 要有正向测试。
 6. **文档同步**：加了新配置项、新命令、新 extras 要**同步改四处**——
-   `.env.example`、`README.md`（英文主）、`README_CN.md`（中文）、本文档
+   `.env.example`、`README.md`（英文主）、`README.zh-CN.md`（中文）、本文档
    （新配置项进 §2 对应小节，新命令进 §1，新文件进 §17 速查表）。
 
 ### Commit message
@@ -1796,9 +2047,10 @@ NewsFlow-Bot/
 ├── pyproject.toml                # 依赖权威
 ├── alembic.ini                   # 迁移配置
 ├── Makefile                      # 常用命令
-├── README.md                     # 用户文档（英文主）
-├── README_CN.md                  # 用户文档（中文）
-└── GUIDE.md                      # 本文档（详细指南）
+├── README.md                     # 快速上手（英文主）
+├── README.zh-CN.md               # 快速上手（中文）
+└── docs/
+    └── user-guide.md             # 本文档（使用与部署详解）
 ```
 
 ---

@@ -295,3 +295,18 @@ async def test_transient_destination_skips_accounting():
     adapter = _make_adapter(_FakeSession(status=500))
     adapter._destinations = {"x": _dest(name="x")}
     assert await adapter.send_message("x", _message()) is False  # no crash, no DB
+
+
+async def test_post_does_not_follow_redirects():
+    """A webhook endpoint answering POST with a 30x is a misconfigured
+    destination; following it would replay the signed body + custom auth
+    headers to an unvetted URL. The adapter must post with
+    allow_redirects=False and count the 30x as a failed send."""
+    session = _FakeSession(status=302)
+    adapter = _make_adapter(session)
+    adapter._destinations = {"x": _dest(name="x")}
+
+    ok = await adapter.send_message("x", _message())
+
+    assert ok is False
+    assert session.calls[0]["allow_redirects"] is False

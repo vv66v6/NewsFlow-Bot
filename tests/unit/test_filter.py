@@ -175,3 +175,46 @@ def test_parse_keyword_csv_trims_and_drops_empties():
     assert parse_keyword_csv("") == ()
     assert parse_keyword_csv(None) == ()
     assert parse_keyword_csv("single") == ("single",)
+
+
+# ===== regex engine safety (mrab regex + timeout, fail-open) =====
+
+
+def test_pathological_regex_does_not_hang_include():
+    """The canonical catastrophic pattern ((a+)+$) wedged stdlib `re` for
+    minutes on a 27-char input; the mrab engine must complete instantly."""
+    import time
+
+    rule = FilterRule(include_regex=r"(a+)+$")
+    t0 = time.perf_counter()
+    result = rule.matches("a" * 40 + "b")
+    assert time.perf_counter() - t0 < 1.0
+    assert result is False  # completed search, no match → include fails
+
+
+def test_regex_timeout_fails_open(caplog):
+    """A pattern that still blows past REGEX_MATCH_TIMEOUT_S (backreference
+    stacking defeats the engine's memoization) is skipped fail-open — the
+    entry passes instead of stalling dispatch, and the skip is logged."""
+    import logging
+
+    # 8 capture groups + 8 backrefs: verified to trip the timeout.
+    slow = r"(a*)(a*)(a*)(a*)(a*)(a*)(a*)(a*)\1\2\3\4\5\6\7\8$"
+    text = "a" * 60 + "b"
+
+    with caplog.at_level(logging.WARNING, logger="newsflow.core.filter"):
+        include_rule = FilterRule(include_regex=slow)
+        assert include_rule.matches(text) is True  # fail open → passes
+
+        exclude_rule = FilterRule(exclude_regex=slow)
+        assert exclude_rule.matches(text) is True  # fail open → not excluded
+
+    assert any("exceeded" in r.message for r in caplog.records)
+
+
+def test_parse_filter_field_still_validates_syntax():
+    with pytest.raises(ValueError):
+        parse_filter_field("/(unclosed/")
+    keywords, pattern = parse_filter_field("/ok(x|y)/")
+    assert keywords == ()
+    assert pattern == "ok(x|y)"

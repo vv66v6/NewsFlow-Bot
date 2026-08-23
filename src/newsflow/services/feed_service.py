@@ -107,10 +107,8 @@ class FeedService:
         # Check if feed already exists
         existing = await self.repo.get_feed_by_url(url)
         if existing:
-            # Re-adding is the natural "I want this working again" signal:
-            # an auto-disabled feed (10 straight errors) has no other
-            # user-reachable revival path — fetch skips inactive feeds, so
-            # its error state can never clear on its own.
+            # Re-adding is the "I want this working again" signal: an auto-disabled feed has
+            # no other revival path, since fetch skips inactive feeds.
             if not existing.is_active:
                 existing.reactivate()
                 logger.info(f"Reactivated auto-disabled feed on re-add: {url}")
@@ -155,12 +153,9 @@ class FeedService:
                 message="Feed has no entries",
             )
 
-        # Create feed record. Guard against a race where two concurrent
-        # subscribers pass the get_feed_by_url check at the same time and
-        # both try to INSERT — SQLite's unique constraint on Feed.url makes
-        # the second INSERT raise IntegrityError instead of silently
-        # succeeding, and we want to surface that as "reuse the existing"
-        # rather than a SQL stack trace to the user.
+        # Guard the race where two concurrent subscribers both pass get_feed_by_url and
+        # INSERT: the unique constraint on Feed.url raises IntegrityError, which we
+        # surface as "reuse the existing" rather than a SQL stack trace.
         try:
             feed = await self.repo.create_feed(
                 url=url,
@@ -255,10 +250,8 @@ class FeedService:
             # Feed.mark_error mutates the same ORM instance via the identity
             # map, so feed.is_active now reflects the post-update state.
             if was_active and not feed.is_active:
-                # Transitioned this call — notify subscribers in a separate
-                # session (theirs; ours isn't committed yet). Pass identity
-                # by value so the notify task doesn't need to re-read.
-                # spawn() holds a strong ref so the task isn't GC'd mid-run.
+                # Transitioned this call — notify in a separate session (ours is not committed).
+                # Identity is passed by value; spawn() holds a strong ref so the task survives.
                 from newsflow.services.dispatcher import get_dispatcher
 
                 get_dispatcher().spawn(
@@ -347,11 +340,8 @@ class FeedService:
         if not feeds:
             return []
 
-        # RSS keeps its optimized concurrent batch path. Other source types
-        # (json_api, email_imap, …) are fetched via their registered
-        # SourceFetcher; each yields the same FetchResult shape so everything
-        # downstream is identical. With only RSS feeds present (the default),
-        # this is the same single fetch_multiple call as before.
+        # RSS keeps its optimized concurrent batch path; other source types go through
+        # their registered SourceFetcher and yield the same FetchResult shape.
         rss_feeds = [f for f in feeds if (f.source_type or "rss") == "rss"]
         # Push sources (webhook_inbound) receive entries via the API, not by
         # polling — no fetcher, so leave them out of the fetch entirely.

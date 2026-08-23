@@ -33,6 +33,12 @@ class OpmlParseError(ValueError):
     """Raised when the document isn't parseable or has no feed outlines."""
 
 
+# Import ceiling: each feed is fetched serially at subscribe time (~30s worst
+# case), so an unbounded file would hold a DB session for hours. 200 keeps real
+# reader exports workable.
+MAX_OPML_FEEDS = 200
+
+
 def parse_opml(content: str) -> list[OpmlEntry]:
     """Extract all RSS outlines (ones with an xmlUrl attribute) from OPML."""
     try:
@@ -52,6 +58,10 @@ def parse_opml(content: str) -> list[OpmlEntry]:
                 html_url=(outline.get("htmlUrl") or outline.get("htmlurl") or "").strip() or None,
             )
         )
+        if len(entries) > MAX_OPML_FEEDS:
+            raise OpmlParseError(
+                f"Too many feeds (over {MAX_OPML_FEEDS}). Split the file and import in batches."
+            )
 
     if not entries:
         raise OpmlParseError("No RSS feeds found in the document")

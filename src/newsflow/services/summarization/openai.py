@@ -132,10 +132,8 @@ class OpenAIDigestProvider(SummarizationProvider):
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.3,
-                # Body-only budget. 2000 was self-contradictory when the
-                # prompt also demanded a 50-entry source list; the list is
-                # now appended in code (DigestService), but 3500 chars of
-                # CJK body alone can exceed 2000 tokens.
+                # Body-only budget: the 50-entry source list is appended in code (DigestService),
+                # and 3500 chars of CJK body alone can exceed 2000 tokens.
                 max_completion_tokens=4000,
             )
             text = (response.choices[0].message.content or "").strip()

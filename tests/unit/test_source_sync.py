@@ -393,3 +393,24 @@ async def test_reconcile_stores_and_removes_fetch_interval(session):
     await session.commit()
     feed = (await _feeds(session))[0]
     assert "fetch_interval_minutes" not in feed.config
+
+
+def test_quoted_bool_strings_are_rejected(tmp_path):
+    """silent: "no" / translate: "false" are non-empty strings; bool()
+    coercion made both True — the exact opposite of what was written."""
+    path = tmp_path / "sources.yaml"
+    path.write_text(
+        """
+sources:
+  s1:
+    type: webhook_inbound
+    url: inbound-1
+    subscribers:
+      - platform: telegram
+        channel: "123"
+        silent: "no"
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(SourceConfigError, match="silent"):
+        parse_sources_yaml(path)

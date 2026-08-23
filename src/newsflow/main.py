@@ -35,13 +35,9 @@ def setup_logging(settings: Settings) -> None:
         structlog.processors.add_log_level,
         timestamper,
         structlog.processors.StackInfoRenderer(),
-        # Without this, exc_info never becomes a rendered traceback in json
-        # mode: JSONRenderer falls back to repr() ("<traceback object ...>")
-        # for stdlib records and drops the stack entirely for structlog
-        # events. Shared between both chains: at configure time it resolves
-        # exc_info=True while the except block is still active; in
-        # foreign_pre_chain it formats the concrete tuple ProcessorFormatter
-        # copies off the LogRecord.
+        # Required for exc_info to render as a traceback in json mode: JSONRenderer
+        # otherwise falls back to repr() for stdlib records and drops the stack for
+        # structlog events. Shared by both chains.
         structlog.processors.format_exc_info,
     ]
 
@@ -77,19 +73,13 @@ def setup_logging(settings: Settings) -> None:
     root.addHandler(handler)
     root.setLevel(log_level)
 
-    # Quiet noisy third-party loggers. Several don't just add noise — they leak
-    # secrets at DEBUG: python-telegram-bot routes every Bot API call through
-    # httpx, whose INFO request line carries the bot token in the URL path; and
-    # aiosqlite logs each SQL statement with its bound parameters at DEBUG
-    # (webhook URL tokens, HMAC secrets, stored API keys). Pinning them to
-    # WARNING keeps those out of the logs even when the app itself runs at DEBUG.
-    # (Opt into SQL tracing explicitly via DB_ECHO, never as a LOG_LEVEL=DEBUG
-    # side effect.)
+    # Several third-party loggers leak secrets at DEBUG: httpx's INFO request line
+    # carries the bot token in the URL path, and aiosqlite logs bound SQL parameters.
+    # Pinned to WARNING; opt into SQL tracing via DB_ECHO, never via LOG_LEVEL.
     for logger_name in [
         "aiohttp",
         "discord",
         "telegram",
-        "apscheduler",
         "httpx",
         "httpcore",
         "aiosqlite",
@@ -103,6 +93,27 @@ def ensure_data_dir(settings: Settings) -> None:
     if not data_dir.exists():
         data_dir.mkdir(parents=True, exist_ok=True)
         logging.info(f"Created data directory: {data_dir}")
+
+
+def clear_stale_heartbeats(settings: Settings) -> None:
+    """Delete leftover heartbeat files from the previous run.
+
+    Heartbeats live in the persistent data volume, so they survive restarts.
+    The Docker HEALTHCHECK flags the container unhealthy if ANY heartbeat
+    file is stale — without this sweep, disabling a platform (e.g. removing
+    DISCORD_TOKEN) leaves its old heartbeat behind and the container goes
+    permanently unhealthy two hours later. Each enabled task re-creates its
+    own file within the healthcheck's start period.
+    """
+    heartbeat_dir = settings.data_dir / "heartbeat"
+    if not heartbeat_dir.is_dir():
+        return
+    for path in heartbeat_dir.iterdir():
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError as e:
+            logging.warning(f"Could not remove stale heartbeat {path.name}: {e}")
 
 
 async def start_discord_bot(settings: Settings) -> None:
@@ -144,21 +155,49 @@ async def start_webhook_adapter_task(settings: Settings) -> None:
 
 
 async def shutdown(loop: asyncio.AbstractEventLoop) -> None:
-    """Graceful shutdown handler."""
+    """Graceful shutdown handler.
+
+    Order matters: platform adapters stop first (they stop polling /
+    accepting commands and their start() tasks return), then the remaining
+    loops are cancelled, and the shared HTTP client and database close LAST —
+    closing the engine while a dispatch round is mid-commit would turn an
+    orderly stop into a burst of connection errors.
+    """
     logging.info("Shutting down...")
 
-    # Close feed fetcher
-    await close_fetcher()
+    settings = get_settings()
+    if settings.telegram_enabled:
+        try:
+            from newsflow.adapters.telegram.bot import stop_telegram
 
-    # Close database
-    await close_db()
+            await stop_telegram()
+        except Exception:
+            logging.exception("Telegram adapter did not stop cleanly")
+    if settings.discord_enabled:
+        try:
+            from newsflow.adapters.discord.bot import stop_discord
 
-    # Cancel all tasks
+            await stop_discord()
+        except Exception:
+            logging.exception("Discord adapter did not stop cleanly")
+    if settings.webhooks_enabled:
+        try:
+            from newsflow.adapters.webhook.bot import stop_webhook
+
+            await stop_webhook()
+        except Exception:
+            logging.exception("Webhook adapter did not stop cleanly")
+
+    # Cancel remaining tasks (dispatch/cleanup/digest/monitor loops, the
+    # platform keep-alive wrappers) and wait for them to unwind.
     tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     for task in tasks:
         task.cancel()
-
     await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Close shared clients only after nothing can be using them.
+    await close_fetcher()
+    await close_db()
     logging.info("Shutdown complete")
 
 
@@ -212,7 +251,10 @@ async def main() -> None:
 
     # Validate configuration
     if not settings.validate_minimal_config():
-        logger.error("No platform token configured. Set DISCORD_TOKEN or TELEGRAM_TOKEN.")
+        logger.error(
+            "No delivery platform configured. Set DISCORD_TOKEN or TELEGRAM_TOKEN, "
+            "or provide a webhooks.yaml for a webhook-only deployment."
+        )
         sys.exit(1)
 
     logger.info("=" * 50)
@@ -228,6 +270,10 @@ async def main() -> None:
 
     # Ensure data directory exists
     ensure_data_dir(settings)
+
+    # Sweep heartbeat files from the previous run so a disabled platform's
+    # leftover file can't trip the Docker HEALTHCHECK as permanently stale.
+    clear_stale_heartbeats(settings)
 
     # Apply database migrations (creates schema on a fresh DB, evolves it
     # on an upgraded deploy).
@@ -271,13 +317,9 @@ async def main() -> None:
         init_cache("memory")
         logger.info("Memory cache initialized")
 
-    # Setup signal handlers. loop.add_signal_handler isn't implemented on
-    # Windows' ProactorEventLoop, but Ctrl+C still surfaces as
-    # KeyboardInterrupt out of asyncio.run() and is caught in cli(), so
-    # dev-on-Windows still shuts down cleanly via that path.
-    #
-    # `_shutdown_tasks` holds strong refs to the shutdown tasks — the event
-    # loop only weak-refs bare create_task results and could GC ours mid-run.
+    # loop.add_signal_handler is unimplemented on Windows' ProactorEventLoop; Ctrl+C
+    # still surfaces as KeyboardInterrupt and is caught in cli(). `_shutdown_tasks`
+    # holds strong refs — the loop only weak-refs bare create_task results.
     loop = asyncio.get_running_loop()
     _shutdown_tasks: set[asyncio.Task] = set()
 

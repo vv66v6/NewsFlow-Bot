@@ -124,3 +124,52 @@ def test_get_fetcher_reads_max_concurrent_from_settings(monkeypatch) -> None:
         assert fetcher._semaphore._value == 25
     finally:
         feed_fetcher._fetcher = None
+
+
+# ===== value bounds (negative/zero intervals used to pass silently) =====
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "cleanup_interval_hours",
+        "digest_check_interval_minutes",
+        "translation_cache_ttl_days",
+        "digest_max_input_chars_per_article",
+    ],
+)
+def test_non_positive_intervals_are_rejected(field):
+    """A zero/negative interval turns the corresponding sleep-loop into a
+    busy spin — reject at load so checkconfig catches it pre-deploy."""
+    for bad in (0, -1):
+        with pytest.raises(ValidationError):
+            Settings(telegram_token="x", **{field: bad})
+    assert getattr(Settings(telegram_token="x", **{field: 1}), field) == 1
+
+
+def test_api_port_range_enforced():
+    for bad in (-1, 0, 65536):
+        with pytest.raises(ValidationError):
+            Settings(telegram_token="x", api_port=bad)
+    assert Settings(telegram_token="x", api_port=8000).api_port == 8000
+
+
+def test_max_feeds_per_channel_rejects_negative():
+    with pytest.raises(ValidationError):
+        Settings(telegram_token="x", max_feeds_per_channel=-1)
+    assert Settings(telegram_token="x", max_feeds_per_channel=0).max_feeds_per_channel == 0
+
+
+# ===== webhook-only deployments =====
+
+
+def test_minimal_config_accepts_webhooks_yaml_without_tokens(tmp_path):
+    """A headless RSS→webhook pipeline is a complete deployment: the file's
+    presence satisfies the minimal-config gate with no chat token set."""
+    yaml_path = tmp_path / "webhooks.yaml"
+    no_platform = Settings(webhooks_config_path=yaml_path)
+    assert no_platform.validate_minimal_config() is False  # file absent
+
+    yaml_path.write_text("destinations: {}\n", encoding="utf-8")
+    webhook_only = Settings(webhooks_config_path=yaml_path)
+    assert webhook_only.validate_minimal_config() is True

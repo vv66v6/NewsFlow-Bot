@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.api.deps import get_db, require_api_key
@@ -28,21 +28,26 @@ router = APIRouter()
 
 class IngestEntry(BaseModel):
     """One pushed item. All fields optional; ``id`` is the dedupe key when
-    present, otherwise a content hash is used."""
+    present, otherwise a content hash is used.
 
-    id: str | None = None
-    title: str | None = None
-    link: str | None = None
-    url: str | None = None
-    summary: str | None = None
-    content: str | None = None
-    author: str | None = None
-    image: str | None = None
+    Field caps mirror the FeedEntry column widths (plus generous text-field
+    ceilings): the endpoint is authenticated, but a leaked key or a buggy
+    client shouldn't be able to push megabyte strings into the DB and the
+    downstream render path. Oversize input fails loudly as a 422."""
+
+    id: str | None = Field(None, max_length=2048)
+    title: str | None = Field(None, max_length=1024)
+    link: str | None = Field(None, max_length=2048)
+    url: str | None = Field(None, max_length=2048)
+    summary: str | None = Field(None, max_length=65_536)
+    content: str | None = Field(None, max_length=262_144)
+    author: str | None = Field(None, max_length=256)
+    image: str | None = Field(None, max_length=2048)
     published_at: datetime | None = None
 
 
 class IngestPayload(BaseModel):
-    entries: list[IngestEntry]
+    entries: list[IngestEntry] = Field(max_length=1000)
 
 
 class IngestResponse(BaseModel):
@@ -94,11 +99,9 @@ async def ingest(
     created = await repo.create_entries_bulk(feed.id, entry_dicts)
 
     if created:
-        # Commit before triggering so the spawned round sees the new rows
-        # (get_db's own commit only runs after this handler returns). A full
-        # dispatch_once is deliberate — it's mutex-serialised with the loop,
-        # and fetch_all_feeds only touches feeds actually due, so a triggered
-        # round is delivery-only in practice.
+        # Commit before triggering so the spawned round sees the new rows. A full
+        # dispatch_once is deliberate: it is mutex-serialised with the loop and
+        # fetch_all_feeds only touches feeds actually due.
         await db.commit()
         from newsflow.services import get_dispatcher
 

@@ -1,22 +1,11 @@
-"""Timezone parsing + local→UTC schedule conversion for digest config.
+"""Timezone parsing and local->UTC schedule conversion for digest config.
 
-Users give delivery times in their own timezone; the database keeps
-storing only UTC (delivery_hour_utc / delivery_weekday). Conversion
-happens once, at configuration time, anchored to the current date — for
-DST timezones the stored UTC hour reflects the offset in effect when the
-user ran the command (a documented simplification: the delivery drifts
-an hour across DST transitions until re-enabled).
+Conversion happens once, at configuration time, anchored to the current date; the
+database stores only UTC.
 
-Accepted timezone spellings:
-- IANA Region/City names: ``Asia/Shanghai``, ``Europe/Berlin`` (the
-  ``tzdata`` wheel backs these on Windows, where zoneinfo has no system
-  database; Debian-based containers ship one already)
-- Fixed offsets: ``+8``, ``-5:30``, ``+08:00``, ``UTC+8``, ``GMT-5``
-- ``utc`` / ``gmt``
-
-Bare region-less names ("PST", "Singapore") are deliberately rejected:
-the Telegram command line sniffs a trailing token as either a language
-code or a timezone, and only the slash/offset forms are unambiguous.
+Accepted: IANA ``Region/City`` names (the ``tzdata`` wheel backs these on Windows),
+fixed offsets (``+8``, ``-5:30``, ``+08:00``, ``UTC+8``, ``GMT-5``), and ``utc`` / ``gmt``.
+Bare region-less names ("PST", "Singapore") are rejected.
 """
 
 import re

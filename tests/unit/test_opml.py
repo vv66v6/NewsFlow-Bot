@@ -121,3 +121,27 @@ def test_build_opml_starts_with_declaration():
 def test_build_opml_includes_creation_date():
     xml = build_opml([OpmlEntry(url="https://example.com/feed")])
     assert "<dateCreated>" in xml
+
+
+def test_import_rejects_over_feed_ceiling():
+    """Each imported feed is fetched serially (~30s worst case); an
+    unbounded file would turn one /import into an hours-long handler."""
+    from newsflow.core.opml import MAX_OPML_FEEDS
+
+    outlines = "".join(
+        f'<outline type="rss" xmlUrl="https://example.com/f{i}"/>'
+        for i in range(MAX_OPML_FEEDS + 1)
+    )
+    doc = f'<opml version="2.0"><body>{outlines}</body></opml>'
+    with pytest.raises(OpmlParseError, match="Too many feeds"):
+        parse_opml(doc)
+
+
+def test_import_at_feed_ceiling_is_accepted():
+    from newsflow.core.opml import MAX_OPML_FEEDS
+
+    outlines = "".join(
+        f'<outline type="rss" xmlUrl="https://example.com/f{i}"/>' for i in range(MAX_OPML_FEEDS)
+    )
+    doc = f'<opml version="2.0"><body>{outlines}</body></opml>'
+    assert len(parse_opml(doc)) == MAX_OPML_FEEDS

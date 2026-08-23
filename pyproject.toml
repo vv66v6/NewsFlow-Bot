@@ -13,7 +13,11 @@ python = "^3.11"
 # === Core Dependencies ===
 # Messaging platforms
 "discord.py" = "^2.3.0"
-python-telegram-bot = { extras = ["job-queue", "rate-limiter"], version = "^20.7" }
+# rate-limiter only: we never schedule anything on PTB's JobQueue (periodic
+# work runs on the dispatcher's own asyncio loops), so the job-queue extra —
+# and the apscheduler it pulls in — stays out. The builder passes
+# .job_queue(None) explicitly.
+python-telegram-bot = { extras = ["rate-limiter"], version = "^20.7" }
 
 # RSS parsing
 feedparser = "^6.0.0"
@@ -39,8 +43,11 @@ defusedxml = "^0.7.1"
 # rather than optional to avoid "why isn't my webhook working" confusion.
 pyyaml = "^6.0"
 
-# Scheduling
-apscheduler = "^3.10.0"
+# User filter regexes (core/filter.py). The mrab engine defuses the classic
+# catastrophic-backtracking patterns stdlib `re` chokes on, and its timeout=
+# parameter bounds whatever remains — stdlib `re` can't be interrupted at
+# all (no timeout, and SIGALRM/threads don't preempt its C matching loop).
+regex = "^2026.7"
 
 # Date parsing
 python-dateutil = "^2.8.0"
@@ -128,6 +135,7 @@ module = [
     "yaml",
     "jsonpath_ng.*",
     "imap_tools.*",
+    "regex",
 ]
 ignore_missing_imports = true
 

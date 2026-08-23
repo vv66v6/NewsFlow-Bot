@@ -32,13 +32,9 @@ class Feed(Base):
     description: Mapped[str | None] = mapped_column(Text)
     site_url: Mapped[str | None] = mapped_column(String(2048))
 
-    # Source type selects the fetcher. 'rss' is the default and keeps every
-    # existing feed on the optimized RSS batch path; other values (json_api,
-    # email_imap, …) route through a registered SourceFetcher. `config` holds
-    # source-specific settings (JSONPath mappings, IMAP target, …) in a generic
-    # SQLAlchemy JSON column: TEXT on SQLite, a JSON column on Postgres (not
-    # JSONB — the blob is stored/loaded whole, never queried into). NULL for
-    # plain RSS.
+    # Source type selects the fetcher; 'rss' keeps the optimized batch path, other
+    # values route through a registered SourceFetcher. `config` is a generic JSON
+    # column (never queried into, so JSON not JSONB); NULL for plain RSS.
     source_type: Mapped[str] = mapped_column(
         String(32), default="rss", server_default="rss", nullable=False
     )

@@ -14,7 +14,7 @@
 
 </div>
 
-> 📖 **本文是快速上手指引**。完整的命令、配置、高级部署、设计决策、扩展开发等细节见 **[GUIDE.md](GUIDE.md)**。
+> 📖 **本文是快速上手指引**。完整的命令、配置、高级部署、设计决策、扩展开发等细节见 **[docs/user-guide.md](docs/user-guide.md)**。
 
 ---
 
@@ -87,29 +87,23 @@
           SQLite 文件 / Postgres (可选)
 ```
 
-详细分层、各模块职责、设计决策见 [GUIDE.md 第 10 章](GUIDE.md#十架构总览)。
+详细分层、各模块职责、设计决策见 [docs/user-guide.md 第 10 章](docs/user-guide.md#十架构总览)。
 
 ---
 
 ## 🚀 快速开始（Docker）
 
-**Debian 12 / Ubuntu 22+**（其他发行版改对应 Docker 安装命令即可）：
+Debian/Ubuntu 系服务器通用（官方脚本自动识别发行版，不用再抄错别家的仓库行）：
 
 ```bash
-# 1. 安装 Docker（如未装）
-sudo apt update && sudo apt install -y ca-certificates curl gnupg
-sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/debian/gpg | \
-    sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-    https://download.docker.com/linux/debian $(lsb_release -cs) stable" | \
-    sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-sudo apt update && sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+# 1. 安装 Docker（如未装；Docker 官方一键脚本）
+curl -fsSL https://get.docker.com | sudo sh
 
 # 2. 拉代码、填 token
 git clone https://github.com/Lynthar/NewsFlow-Bot.git
 cd NewsFlow-Bot
 cp .env.example .env
+chmod 600 .env     # 里面会放 bot token，别让同机其他用户读到
 nano .env     # 至少填一个 DISCORD_TOKEN 或 TELEGRAM_TOKEN
 
 # 3. 启动（直接拉 GHCR 预构建多架构镜像，无需本地编译）
@@ -121,7 +115,7 @@ docker compose -f docker/docker-compose.yml logs -f newsflow
 
 > 想自己构建镜像而不是拉预构建的？用 `make docker-up-local`（或给 `up` 命令设 `NEWSFLOW_IMAGE=newsflow-bot:latest`）。
 
-**获取 token**：Discord 看 [Developer Portal](https://discord.com/developers/applications)；Telegram 找 [@BotFather](https://t.me/BotFather)。详细步骤见 [GUIDE.md](GUIDE.md#一完整命令参考)。
+**获取 token**：Discord 看 [Developer Portal](https://discord.com/developers/applications)；Telegram 找 [@BotFather](https://t.me/BotFather)。详细步骤见 [docs/user-guide.md](docs/user-guide.md#一完整命令参考)。
 
 > **不需要任何特权 intent**。NewsFlow 只靠斜杠命令与 Discord 交互，Developer Portal → Bot → Privileged Gateway Intents 三个开关（Presence / Server Members / Message Content）**全部保持关闭**即可。v0.9.1 之前的版本会申请 Message Content，没开就启动崩溃循环；当年开过的话，升级后可以关掉。
 
@@ -134,8 +128,8 @@ docker compose -f docker/docker-compose.yml logs -f newsflow
 | OS | Linux（Debian 12 / Ubuntu 22+ / CentOS 等） |
 | Python | 3.11 / 3.12 / 3.13（3.14 暂不支持，`lxml` 无 wheel） |
 | 内存 | 最低 256 MiB，推荐 512 MiB |
-| 网络 | 仅需出站 HTTPS 443 |
-| Docker | 20.10+ + Compose v2（或用 [systemd 部署](GUIDE.md#七高级部署与运维)） |
+| 网络 | 出站 HTTPS 443（订阅 http:// 源的话还需 80） |
+| Docker | 20.10+ + Compose v2（或用 [systemd 部署](docs/user-guide.md#七高级部署与运维)） |
 
 ---
 
@@ -164,11 +158,11 @@ docker compose -f docker/docker-compose.yml logs -f newsflow
 /digest enable daily 9   开日报
 ```
 
-**完整命令参考**（30+ 个）：[GUIDE.md 第 1 章](GUIDE.md#一完整命令参考)。
+**完整命令参考**（30+ 个）：[docs/user-guide.md 第 1 章](docs/user-guide.md#一完整命令参考)。
 
-**Webhook 推送**是纯出口（没有 bot 命令）——Docker 部署下 `cp samples/webhooks.example.yaml config/webhooks.yaml`（`config/` 目录已挂载进容器），编辑后重启即可。详见 [GUIDE.md 第 4 章](GUIDE.md#四webhook-推送) 或带注释的 [`samples/webhooks.example.yaml`](samples/webhooks.example.yaml)。
+**Webhook 推送**是纯出口（没有 bot 命令）——Docker 部署下 `cp samples/webhooks.example.yaml config/webhooks.yaml`（`config/` 目录已挂载进容器），编辑后重启即可。详见 [docs/user-guide.md 第 4 章](docs/user-guide.md#四webhook-推送) 或带注释的 [`samples/webhooks.example.yaml`](samples/webhooks.example.yaml)。
 
-**非 RSS 源**（JSON API、IMAP newsletter、入站 webhook 推送）同样在 `config/sources.yaml` 声明——详见 [GUIDE.md 第 4B 章](GUIDE.md#四b非-rss-信息源sourcesyaml) 或 [`samples/sources.example.yaml`](samples/sources.example.yaml)。相关 extra 已打进 Docker 镜像；裸机运行才需 `make install-all`。
+**非 RSS 源**（JSON API、IMAP newsletter、入站 webhook 推送）同样在 `config/sources.yaml` 声明——详见 [docs/user-guide.md 第 4B 章](docs/user-guide.md#四b非-rss-信息源sourcesyaml) 或 [`samples/sources.example.yaml`](samples/sources.example.yaml)。相关 extra 已打进 Docker 镜像；裸机运行才需 `make install-all`。
 
 > 裸机运行（非 Docker）？这两个文件默认在 `./data/` 下——用 `WEBHOOKS_CONFIG_PATH` / `SOURCES_CONFIG_PATH` 改路径。
 
@@ -197,7 +191,7 @@ API_ENABLED=true                         # REST API + 入站 /api/ingest
 API_KEY=一串足够长的随机字符串            # API 写操作 / 入站推送所需
 ```
 
-**完整 30+ 配置项**：[GUIDE.md 第 2 章](GUIDE.md#二完整配置项)。
+**完整 30+ 配置项**：[docs/user-guide.md 第 2 章](docs/user-guide.md#二完整配置项)。
 
 ---
 
@@ -212,22 +206,22 @@ API_KEY=一串足够长的随机字符串            # API 写操作 / 入站推
 <details>
 <summary><b>容器无限重启，日志 <code>InvalidToken</code></b></summary>
 
-`.env` 里的 token 还是占位符或者输错了。改后用 **`docker compose -f docker/docker-compose.yml up -d newsflow`**——光 `restart` 是**不够**的：compose 只在 `up` 时读一次 `env_file` 并把结果缓存进容器配置，`restart` 用的是那份旧缓存。改 `.env` 后必须 `up -d`（compose 发现值变了会 recreate 容器）。详见 [GUIDE.md §7.6](GUIDE.md#76-部署后在线改配置env-的正确姿势)。
+`.env` 里的 token 还是占位符或者输错了。改后用 **`docker compose -f docker/docker-compose.yml up -d newsflow`**——光 `restart` 是**不够**的：compose 只在 `up` 时读一次 `env_file` 并把结果缓存进容器配置，`restart` 用的是那份旧缓存。改 `.env` 后必须 `up -d`（compose 发现值变了会 recreate 容器）。详见 [docs/user-guide.md §7.6](docs/user-guide.md#76-部署后在线改配置env-的正确姿势)。
 </details>
 
 <details>
 <summary><b>想自定义 AI 日报的风格 / 翻译的口吻</b></summary>
 
-`.env` 里设 `TRANSLATION_SYSTEM_PROMPT=` 或 `DIGEST_SYSTEM_PROMPT=` 覆盖默认。详见 [GUIDE.md §3.3](GUIDE.md#33-自定义-ai-提示词)。
+`.env` 里设 `TRANSLATION_SYSTEM_PROMPT=` 或 `DIGEST_SYSTEM_PROMPT=` 覆盖默认。详见 [docs/user-guide.md §3.3](docs/user-guide.md#33-自定义-ai-提示词)。
 </details>
 
-**更多 FAQ**（DNS / 翻译没生效 / 数据重置 / 升级报错 等）：[GUIDE.md 第 15 章](GUIDE.md#十五常见陷阱--faq)。
+**更多 FAQ**（DNS / 翻译没生效 / 数据重置 / 升级报错 等）：[docs/user-guide.md 第 15 章](docs/user-guide.md#十五常见陷阱--faq)。
 
 ---
 
 ## 🤝 贡献 / 二次开发
 
-架构设计、代码风格、扩展点（加新平台 / 新翻译 provider / 新 API 端点）都在 **[GUIDE.md 第 8-17 章](GUIDE.md#开发--架构)**。
+架构设计、代码风格、扩展点（加新平台 / 新翻译 provider / 新 API 端点）都在 **[docs/user-guide.md 第 8-17 章](docs/user-guide.md#开发--架构)**。
 
 快速开发循环：
 

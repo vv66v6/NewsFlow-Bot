@@ -120,10 +120,8 @@ class Dispatcher:
         # event loop only holds weak refs and a task can be GC'd mid-run. See
         # https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task
         self._background_tasks: set[asyncio.Task] = set()
-        # Serialises dispatch rounds. The loop used to be the only caller;
-        # ingest-triggered rounds (push sources) now share the path, and two
-        # interleaved rounds would double-send: both read the same unsent
-        # entries before either marks them sent.
+        # Serialises dispatch rounds: the loop and ingest-triggered rounds share this
+        # path, and two interleaved rounds double-send.
         self._dispatch_mutex = asyncio.Lock()
         self.totals = DispatcherTotals()
 
@@ -213,51 +211,22 @@ class Dispatcher:
 
                 result.new_entries = len(new_entries)
 
-                # Commit the fetch writes (feed metadata + new entries) NOW,
-                # before the subscription loop. On SQLite these writes hold the
-                # single-writer lock, and leaving them uncommitted through the
-                # loop blocks the webhook adapter's breaker accounting — which
-                # runs in its OWN session/connection — for the full 15s
-                # busy-timeout on every failing send, so the breaker never trips
-                # and each round stalls. Committing here releases the lock; the
-                # per-subscription commits below are unchanged, and feed
-                # metadata (etag / backoff / last_fetched) rightly persists
-                # regardless of send outcome — the same reason the round-end
-                # commit exists.
+                # Commit the fetch writes BEFORE the subscription loop: on SQLite they hold
+                # the single-writer lock, which stalls the webhook breaker (own session) for
+                # the full busy-timeout on every failing send.
                 await session.commit()
 
-                # Dispatch to subscriptions every cycle, not only when this
-                # cycle produced new entries. A subscription can still hold a
-                # backlog of unsent entries from an earlier cycle whose send
-                # failed transiently (adapter returned False — e.g. a Discord
-                # permission blip or a network hiccup; those deliberately leave
-                # the entry unmarked so it retries). Gating this on new_entries
-                # would strand that backlog until *some* feed happens to
-                # publish again, which for a quiet feed can be days — past the
-                # publish-age cutoff, dropping the entry silently.
-                # get_unsent_entries_for_subscription returns [] cheaply when a
-                # subscription has nothing pending, so an idle cycle costs just
-                # one indexed SELECT per active subscription.
+                # Dispatch to every subscription each cycle, not only when this cycle produced
+                # entries: a subscription can hold a backlog whose earlier send failed
+                # transiently, and gating on new_entries strands it past the age cutoff.
                 sub_repo = SubscriptionRepository(session)
                 subscriptions = await sub_repo.get_all_active_subscriptions()
-                # Iterate over a plain-id snapshot and re-fetch each row at
-                # the top of the loop. A failed per-sub commit below rolls
-                # the transaction back, which expires EVERY ORM instance in
-                # the session (regardless of expire_on_commit=False) — the
-                # next attribute access on a cached object would raise
-                # MissingGreenlet and abort the rest of the round. The
-                # re-fetch is one indexed SELECT per subscription and makes
-                # each iteration self-healing after a rollback.
+                # Iterate a plain-id snapshot and re-fetch at the top: a failed per-sub commit
+                # rolls back and expires EVERY ORM instance in the session, so a cached
+                # object would raise MissingGreenlet and abort the rest of the round.
                 sub_ids = [s.id for s in subscriptions]
-                # Channels that surfaced as gone earlier in THIS cycle.
-                # The first ChannelGoneError already flipped every sub
-                # for the channel via a bulk UPDATE, but that doesn't
-                # sync identity-mapped instances, so the re-fetch above
-                # still sees is_active=True for the rest. Skipping them
-                # here avoids N-1 doomed adapter calls + N-1 redundant
-                # no-op UPDATEs per dead channel per cycle. Next cycle's
-                # get_all_active_subscriptions filters them out at the
-                # source.
+                # Channels already found gone this cycle. The bulk UPDATE does not sync
+                # identity-mapped instances, so the re-fetch still sees is_active=True.
                 dead_channels: set[tuple[str, str]] = set()
                 for sub_id in sub_ids:
                     sub = await sub_repo.get_subscription_by_id(sub_id)
@@ -274,17 +243,9 @@ class Dispatcher:
                         dead_channels=dead_channels,
                     )
                     result.messages_sent += sent
-                    # Commit after each subscription, not once per round.
-                    # Messages went out the moment the adapter returned —
-                    # a single round-end commit meant any late failure
-                    # (SQLITE_BUSY, crash, deploy restart) rolled back the
-                    # whole round's sent-marks and re-pushed EVERY message
-                    # next cycle. Per-sub commits bound the re-send window
-                    # to one subscription (≤ the per-cycle entry limit)
-                    # and release the SQLite write lock between subs so
-                    # slash commands aren't starved during a long round.
-                    # (Safe to keep using the ORM objects: the session
-                    # factory sets expire_on_commit=False.)
+                    # Commit after each subscription, never once per round: messages went out when
+                    # the adapter returned, so a late failure would roll back the whole round's
+                    # sent-marks and re-push everything. expire_on_commit=False keeps objects usable.
                     try:
                         await session.commit()
                     except Exception:
@@ -294,13 +255,9 @@ class Dispatcher:
                         )
                         await session.rollback()
 
-                # Final commit covers rounds with zero subscriptions — feed
-                # metadata written by fetch_all_feeds (etag / last_modified /
-                # last_fetched_at / error_count / next_retry_at) must persist
-                # even when every feed returned 304 or no new items. Without
-                # it the AsyncSession context manager would roll those back,
-                # silently defeating the ETag cache, exponential backoff, and
-                # the 10-errors auto-deactivate.
+                # Final commit covers rounds with zero subscriptions: feed metadata (etag /
+                # backoff / error_count) must persist or the ETag cache, backoff and the
+                # 10-errors auto-deactivate are all silently defeated.
                 await session.commit()
 
             except Exception as e:
@@ -358,12 +315,9 @@ class Dispatcher:
         sent_count = 0
         for entry in entries:
             try:
-                # Apply filter before the (potentially expensive) translation
-                # and send path. Filtered entries are marked "processed" so
-                # the loop doesn't re-evaluate them every dispatch cycle.
-                # Match on CLEANED text (title + summary + content): raw
-                # markup made exclude words fire on URLs/tag attributes,
-                # and the article body was invisible to filters entirely.
+                # Filter before the expensive translate/send path; filtered entries are marked
+                # processed. Match on CLEANED text — raw markup fires exclude words on URLs
+                # and hides the article body from filters entirely.
                 if not filter_rule.is_empty():
                     summary_text, _ = clean_html(entry.summary or "")
                     content_text, _ = clean_html(entry.content or "")
@@ -381,12 +335,9 @@ class Dispatcher:
                         )
                         continue
 
-                # Silent mode: no instant push, but mark the entry as sent
-                # (was_filtered=False) so the digest pipeline picks it up
-                # via SentEntry. Skipped translation here too — digest
-                # uses the original title/summary, no API spend wasted.
-                # bypass_silent=True comes from the preview path so the
-                # user gets one confirmation article on subscribe.
+                # Silent mode: no instant push, but mark sent (was_filtered=False) so digest
+                # picks it up via SentEntry. Translation skipped — digest uses the original.
+                # bypass_silent=True is the preview path (one confirmation article).
                 if subscription.silent and not bypass_silent:
                     await sub_repo.mark_entry_sent(
                         subscription.id,
@@ -422,21 +373,14 @@ class Dispatcher:
                         f"Failed to send entry {entry.id} to {subscription.platform}/{subscription.platform_channel_id}"
                     )
 
-                # Small smoothing pause between sends. Platform-level rate
-                # limiting is enforced by the libraries (discord.py internal
-                # buckets; Telegram AIORateLimiter); this is just a nudge to
-                # avoid bursty spikes when many entries are due at once.
+                # Smoothing pause only. Real rate limiting lives in the libraries
+                # (discord.py buckets, Telegram AIORateLimiter).
                 await asyncio.sleep(0.1)
 
             except TopicGoneError as e:
-                # The forum topic this subscription targets was deleted while
-                # the chat itself is alive. Self-heal: clear the thread so
-                # delivery falls back to the chat's default view — this
-                # entry stays unsent and goes out next cycle; the REMAINING
-                # entries in this batch already build against the cleared
-                # value and deliver immediately. Plain attribute write: the
-                # per-subscription commit persists it, and a rollback just
-                # means we heal again next round (idempotent).
+                # Forum topic deleted, chat alive: clear the thread so delivery falls back to
+                # the default view. This entry stays unsent; the rest of the batch already
+                # builds against the cleared value. Idempotent — a rollback just re-heals.
                 subscription.message_thread_id = None
                 logger.warning(
                     f"Topic {e.thread_id} in {subscription.platform}/"
@@ -446,11 +390,8 @@ class Dispatcher:
                 continue
 
             except ChannelMigratedError as e:
-                # Telegram group upgraded to supergroup: the channel still
-                # exists but under a new chat id, and the old id rejects
-                # every send from now on. Repoint all subscriptions and
-                # any digest config at the new id; the not-yet-sent
-                # entries (including this one) deliver there on the next
+                # Telegram supergroup upgrade: same channel, new chat id, old id rejects every
+                # send. Repoint all subs + digest config; unsent entries deliver there next
                 # cycle. The outer dispatch_once commit persists it.
                 from newsflow.repositories.digest_repository import (
                     ChannelDigestRepository,
@@ -479,14 +420,9 @@ class Dispatcher:
                 return sent_count
 
             except ChannelGoneError as e:
-                # Channel is permanently unreachable. Deactivate every
-                # active subscription for it (not just this one — a
-                # channel usually has many feeds) and disable any
-                # digest config so no further API calls burn on this
-                # dead destination. The outer dispatch_once commit
-                # persists the UPDATE. Idempotent: the WHERE
-                # is_active=True clause no-ops on repeated calls in
-                # the same cycle.
+                # Channel permanently unreachable: deactivate every active subscription for it
+                # (a channel usually has many feeds) and disable any digest config.
+                # Idempotent — the WHERE is_active=True clause no-ops on repeat.
                 from newsflow.repositories.digest_repository import (
                     ChannelDigestRepository,
                 )
@@ -498,12 +434,9 @@ class Dispatcher:
                 digests_flipped = await digest_repo.disable_for_channel(
                     subscription.platform, subscription.platform_channel_id
                 )
-                # Tell dispatch_once to skip remaining cached subs that
-                # target the same channel — see the comment there. This
-                # is what guarantees the warning below fires exactly
-                # once per channel per cycle now; the rowcount check is
-                # still kept as defense-in-depth for callers that don't
-                # pass the set (preview path).
+                # Tell dispatch_once to skip remaining cached subs on this channel, which is
+                # what makes the warning below fire exactly once per channel per cycle.
+                # The rowcount check stays as defence for callers that pass no set.
                 if dead_channels is not None:
                     dead_channels.add((subscription.platform, subscription.platform_channel_id))
                 if subs_flipped or digests_flipped:
@@ -519,12 +452,9 @@ class Dispatcher:
                 return sent_count
 
             except SQLAlchemyError:
-                # A failed mark/flush has likely poisoned the transaction:
-                # every later mark in this batch would fail too while its
-                # message had already been pushed to the platform — each one
-                # a guaranteed duplicate next cycle. Stop the batch; the
-                # per-subscription commit path rolls back and the round
-                # continues with the next subscription.
+                # A failed mark/flush has poisoned the transaction: every later mark in this
+                # batch fails while its message was already pushed — a guaranteed duplicate
+                # next cycle. Stop the batch; the round continues with the next subscription.
                 logger.exception(
                     f"DB error marking entry {entry.id} for subscription "
                     f"{subscription.id}; aborting this subscription's batch"
@@ -553,11 +483,8 @@ class Dispatcher:
         if entry.translation_language == target_language and entry.title_translated:
             return entry.title_translated, entry.summary_translated
 
-        # Same-language short-circuit #1 (free): the script already tells
-        # us the text is in the target language, so there's nothing to
-        # translate. Only fires for script-unique languages (zh/ja/ko) and
-        # never across the simplified↔traditional boundary — a zh-TW
-        # target with a simplified source still goes to the provider.
+        # Same-language short-circuit #1 (free, script-based). Only for script-unique
+        # languages (zh/ja/ko) and never across the simplified<->traditional boundary.
         combined = f"{entry.title or ''} {plain_summary}".strip()
         if combined and text_clearly_in_language(combined, target_language):
             logger.debug(f"Entry {entry.id} already in {target_language}; skipping translation")
@@ -576,16 +503,9 @@ class Dispatcher:
             if entry.title:
                 result = await translation_service.translate(entry.title, target_language)
                 if result.success:
-                    # Same-language short-circuit #2 (provider-informed):
-                    # the provider detected source == target (covers what
-                    # the script check can't — e.g. an English feed with
-                    # target en). Drop the provider's output rather than
-                    # adopt a "polished" identity translation, skip the
-                    # summary call, and cache the originals so every other
-                    # same-target subscription short-circuits at the top
-                    # check with zero further API calls. zh is excluded:
-                    # detectors report bare "ZH", which can't see the
-                    # simplified↔traditional boundary.
+                    # Same-language short-circuit #2 (provider-informed). Drop the provider output
+                    # rather than adopt a "polished" identity translation, and cache the originals.
+                    # zh is excluded: detectors report bare "ZH" and cannot see simplified/traditional.
                     if same_primary_language(
                         result.source_language, target_language
                     ) and not target_language.lower().startswith("zh"):
@@ -610,14 +530,9 @@ class Dispatcher:
                 if result.success:
                     summary_translated = result.translated_text
 
-            # Cache translations in the DB only when every field we attempted
-            # actually came back. Caching a partial result (e.g. title
-            # translated but the summary call failed) would freeze the gap in:
-            # the early-cache check at the top of this method would then
-            # short-circuit future dispatches and the summary would never be
-            # retried, even after the provider recovers. Leaving a partial
-            # uncached lets the next dispatch retry — the half that already
-            # succeeded comes back cheaply from the service-layer cache.
+            # Cache in the DB only when every attempted field came back. A partial result
+            # would freeze the gap in: the early-cache check would short-circuit future
+            # dispatches and the missing half would never be retried.
             title_ok = title_translated is not None or not entry.title
             summary_ok = summary_translated is not None or not plain_summary
             if title_ok and summary_ok and (title_translated or summary_translated):
@@ -645,26 +560,19 @@ class Dispatcher:
         lang = "zh" if subscription.target_language.startswith("zh") else "en"
         source = get_source_name(entry.link, lang)
 
-        # Feeds like hnrss.org embed raw HTML (<p>, <a href>) in summary /
-        # description fields. Discord/Telegram don't render HTML, so we'd
-        # ship it to the user as literal angle brackets. Strip here, prefer
-        # `content` (fuller) over `summary`.
+        # Feeds embed raw HTML in summary/description and the platforms do not render
+        # it. Strip here; prefer `content` (fuller) over `summary`.
         raw_body = entry.content or entry.summary or ""
         plain_summary, _images = clean_html(raw_body)
         plain_summary = truncate_text(plain_summary, MAX_SUMMARY_LENGTH)
-        # Drop summaries that merely echo the title — common in Google
-        # News wrappers ("Title  Source") and headline-only feeds. With
-        # dedup done BEFORE translation, we also skip an API call on the
-        # redundant text. See content_processor.dedup_summary for rules.
+        # Drop summaries that merely echo the title (rules in content_processor.
+        # dedup_summary). Dedup runs BEFORE translation so the redundant text also
+        # costs no API call.
         plain_summary = dedup_summary(entry.title, plain_summary)
 
-        # Translated fields start empty: the cache on FeedEntry is shared by
-        # every subscription to this feed, so seeding from it here would hand
-        # a channel that turned translation OFF (or targets another language)
-        # whatever translation some other channel happened to cache first.
-        # Only the translate branch below may fill these — _translate_entry
-        # checks the cached language actually matches this subscription's
-        # target before reusing it.
+        # Translated fields start empty. The FeedEntry cache is shared by every
+        # subscription to this feed, so seeding here would hand a channel with
+        # translation off — or another target — whatever some other channel cached.
         title_translated: str | None = None
         summary_translated: str | None = None
 
@@ -676,12 +584,9 @@ class Dispatcher:
                 entry, subscription.target_language, session, plain_summary
             )
 
-        # Custom template: rendered from PRE-trim values, so {summary} and
-        # {image_url} always resolve — the template has full authority over
-        # its text and show_summary is deliberately ignored (show_image
-        # below still governs the platform-side image attachment). Render
-        # problems (or a template resolving to nothing) fall back to the
-        # default layout: a broken template must never lose an article.
+        # Custom template renders from PRE-trim values so {summary}/{image_url} always
+        # resolve; show_summary is deliberately ignored. Render problems fall back to
+        # the default layout — a broken template must never lose an article.
         template_text: str | None = None
         if subscription.message_template:
             pretrim = Message(
@@ -704,14 +609,13 @@ class Dispatcher:
                 logger.exception(f"Template render failed for subscription {subscription.id}")
                 template_text = None
 
-        # Per-subscription display controls (/feed display, /setdisplay).
-        # Applied at message build only, AFTER translation, so a hidden
-        # summary still warms the shared translation cache for other
-        # subscriptions to the same feed.
+        # Per-subscription display controls, applied at message build AFTER translation
+        # so a hidden summary still warms the shared translation cache.
         if subscription.show_summary is False:
             plain_summary = ""
             summary_translated = None
-        image_url = entry.image_url if subscription.show_image is not False else None
+        show_image = subscription.show_image is not False
+        image_url = entry.image_url if show_image else None
 
         return Message(
             title=entry.title,
@@ -725,6 +629,7 @@ class Dispatcher:
             template_text=template_text,
             mention=subscription.mention,
             thread_id=subscription.message_thread_id,
+            show_image=show_image,
         )
 
     async def run_platform_monitor(self, interval_seconds: int = 30) -> None:
@@ -852,6 +757,10 @@ class Dispatcher:
         except Exception:
             logger.exception(f"Preview dispatch failed for subscription {subscription_id}")
 
+    # Zero-width space — invisible in rendered text, but it breaks Discord's
+    # mass-mention token parse, turning model-emitted @everyone/@here inert.
+    _ZWSP = "\u200b"
+
     def apply_digest_header(self, text: str, platform: str) -> str:
         """Prepend a visible header + platform-appropriate mention to
         digest text when DIGEST_MENTION_ON_DELIVERY is enabled.
@@ -862,15 +771,25 @@ class Dispatcher:
         Without this shim the 3 paths had drifted — mention only fired
         on scheduled runs, not on manual test runs.
 
-        Discord gets `@here` (requires bot "Mention Everyone" perm to
-        actually notify). Telegram / webhook just get the visible
-        header — no mention token since those platforms' notification
-        model differs.
+        Discord gets `@here`, and the Discord adapter sends digest text
+        with AllowedMentions(everyone=True) so it actually pings —
+        overriding the client-wide AllowedMentions.none() baseline that
+        otherwise neuters every mention in bot content. Because the
+        digest body is LLM-generated, mass-mention tokens inside it are
+        neutralized (zero-width insert) BEFORE the header is prepended:
+        only the code-added header can ever ping. (The bot still needs
+        the "Mention Everyone" channel permission — Discord requires
+        both the permission and the allowance.) Telegram / webhook just
+        get the visible header — no mention token since those platforms'
+        notification model differs.
         """
         if not self.settings.digest_mention_on_delivery:
             return text
         if platform == "discord":
-            return "@here 📰 **Digest**\n\n" + text
+            body = text.replace("@everyone", f"@{self._ZWSP}everyone").replace(
+                "@here", f"@{self._ZWSP}here"
+            )
+            return "@here 📰 **Digest**\n\n" + body
         return "📰 **Digest**\n\n" + text
 
     async def _send_text_split(
@@ -1072,11 +991,9 @@ class Dispatcher:
                 )
                 continue
 
-            # Fresh session per channel so one failure doesn't poison others.
-            # Split into three phases so the session is not held across the
-            # LLM call and Discord IO — those are the slow parts and were
-            # causing mark_delivered UPDATEs to collide with the dispatch
-            # loop's long write transaction (SQLITE_BUSY).
+            # Fresh session per channel, split into three phases so no session is held
+            # across the LLM call or platform IO — that collided with the dispatch loop's
+            # long write transaction (SQLITE_BUSY).
             try:
                 # Phase 1: load config + generate digest text.
                 async with session_factory() as session:
@@ -1113,11 +1030,8 @@ class Dispatcher:
 
                     digest_text = self.apply_digest_header(result.text, config.platform)
 
-                # Phase 2: deliver to platform (no session held — Discord /
-                # Telegram IO can take several seconds; holding a pooled
-                # connection through that just invites lock contention).
-                # Deliver. Discord text messages cap at ~2000 chars;
-                # Telegram at 4096. Use 1900 to be safe for both.
+                # Phase 2: deliver with no session held (platform IO can take seconds).
+                # 1900 chars fits both Discord (~2000) and Telegram (4096).
                 chunks_sent, new_pin_id = await self.deliver_digest(
                     adapter,
                     config.platform_channel_id,
@@ -1132,12 +1046,9 @@ class Dispatcher:
                     )
                     continue
 
-                # Phase 3: persist delivery mark in a short session. If
-                # the UPDATE still fails under lock pressure, the digest
-                # already landed in the channel — log and move on; the
-                # next tick's is_due() check will notice the stale mark
-                # and may re-fire, which is preferable to crashing the
-                # loop iteration.
+                # Phase 3: persist the delivery mark in a short session. If it still fails the
+                # digest has already landed, so log and move on — the next tick's is_due()
+                # may re-fire, which beats crashing the loop iteration.
                 try:
                     async with session_factory() as session:
                         from newsflow.repositories.digest_repository import (
@@ -1159,10 +1070,8 @@ class Dispatcher:
                     f"{config.platform_channel_id} ({chunks_sent} chunks)"
                 )
             except ChannelMigratedError as e:
-                # Same channel, new chat id (Telegram supergroup upgrade).
-                # Repoint subs + digest config in a fresh session; the
-                # digest wasn't marked delivered, so the next tick
-                # regenerates and delivers it to the new id.
+                # Same channel, new chat id (supergroup upgrade). Repoint in a fresh session;
+                # the digest was not marked delivered, so the next tick redelivers.
                 from newsflow.repositories.subscription_repository import (
                     SubscriptionRepository,
                 )
@@ -1190,12 +1099,9 @@ class Dispatcher:
                 except Exception:
                     logger.exception(f"Failed to migrate channel {platform}/{old_channel_id}")
             except ChannelGoneError as e:
-                # Digest target channel is gone. Disable the digest config
-                # AND any remaining active subs pointing at this channel
-                # (the feed dispatch path handles its own, but this tick
-                # might run BEFORE the next feed dispatch visits those
-                # subs, so we shortcut). Fresh session per channel, so
-                # its own commit is independent of other channels.
+                # Digest target gone: disable the digest config AND any remaining active subs
+                # on this channel — this tick may run before the next feed dispatch visits
+                # them. Fresh session per channel keeps commits independent.
                 from newsflow.repositories.subscription_repository import (
                     SubscriptionRepository,
                 )

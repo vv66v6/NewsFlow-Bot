@@ -516,3 +516,64 @@ subscriptions:
 
     assert feed.is_active is True
     assert feed.error_count == 0
+
+
+def test_quoted_false_bool_is_rejected_not_coerced(tmp_path):
+    """`translate: "false"` is a non-empty string — bool() coercion turned
+    it into True, silently inverting the operator's intent. Strict check:
+    non-bool → config error at parse time."""
+    path = _write(
+        tmp_path,
+        """
+destinations:
+  a:
+    url: https://example.com/hook
+    translate: "false"
+""",
+    )
+    with pytest.raises(WebhookConfigError, match="translate"):
+        parse_webhooks_yaml(path)
+
+
+def test_unquoted_yaml_booleans_still_work(tmp_path):
+    path = _write(
+        tmp_path,
+        """
+destinations:
+  a:
+    url: https://example.com/hook
+    translate: off
+""",
+    )
+    assert parse_webhooks_yaml(path).destinations["a"].translate is False
+
+
+def test_non_string_secret_is_rejected(tmp_path):
+    """int-coercion would lose leading zeros and silently change the HMAC
+    key; require an explicit string."""
+    path = _write(
+        tmp_path,
+        """
+destinations:
+  a:
+    url: https://example.com/hook
+    secret: 12345
+""",
+    )
+    with pytest.raises(WebhookConfigError, match="secret"):
+        parse_webhooks_yaml(path)
+
+
+def test_non_string_header_names_are_rejected(tmp_path):
+    path = _write(
+        tmp_path,
+        """
+destinations:
+  a:
+    url: https://example.com/hook
+    headers:
+      1: value
+""",
+    )
+    with pytest.raises(WebhookConfigError, match="header names"):
+        parse_webhooks_yaml(path)

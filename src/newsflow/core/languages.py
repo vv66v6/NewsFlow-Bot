@@ -54,10 +54,9 @@ _HAN_RE = re.compile(r"[一-鿿]")
 _KANA_RE = re.compile(r"[぀-ヿ]")
 _HANGUL_RE = re.compile(r"[가-힯]")
 
-# High-frequency characters that exist in exactly one Chinese variant.
-# Used to keep the zh short-circuit away from simplified↔traditional
-# conversion scenarios (a zh-TW target with a simplified-Chinese source
-# still needs the translator).
+# High-frequency characters unique to one Chinese variant. Keeps the zh
+# short-circuit away from simplified<->traditional conversion, which still
+# needs the translator.
 _SIMPLIFIED_ONLY = set("们这国说时会对经现发么样还没让见业动车长门问间")
 _TRADITIONAL_ONLY = set("們這國說時會對經現發麼樣還沒讓見業動車長門問間")
 

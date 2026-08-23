@@ -103,19 +103,21 @@ class Message:
     title_translated: str | None = None
     summary_translated: str | None = None
 
-    # Rendered custom template (core/message_template.py), filled by the
-    # dispatcher when the subscription has one. When set, Discord/Telegram
-    # send this Markdown-ish text instead of their default layout; webhook
-    # converters ignore it (structured payloads stay canonical).
+    # Rendered custom template, filled by the dispatcher. When set, Discord/Telegram
+    # send this instead of their default layout; webhook converters ignore it so
+    # structured payloads stay canonical.
     template_text: str | None = None
 
-    # Platform-specific delivery directives, filled from the subscription.
-    # `mention` (Discord): "<@&roleid>" / "<@userid>" pinged with the entry
-    # — prefixed as a content line unless the template already placed it
-    # via {mention}. `thread_id` (Telegram): forum topic to deliver into.
-    # Other adapters ignore both.
+    # Platform-specific delivery directives from the subscription: `mention` (Discord,
+    # prefixed unless the template placed it via {mention}) and `thread_id`
+    # (Telegram forum topic). Other adapters ignore both.
     mention: str | None = None
     thread_id: int | None = None
+
+    # Subscription show_image flag. Discord ignores it (the dispatcher already blanked
+    # image_url); Telegram maps False to disable_web_page_preview. Distinct from
+    # image_url is None — a link preview grows from the page even without metadata.
+    show_image: bool = True
 
     @property
     def display_title(self) -> str:

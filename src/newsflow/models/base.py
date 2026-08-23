@@ -72,12 +72,9 @@ class Base(DeclarativeBase):
 
     metadata = MetaData(naming_convention=convention)
 
-    # Common columns for all models.
-    # created_at/updated_at use DateTime(timezone=True) to match every other
-    # timestamp column in the schema. The default is a tz-AWARE UTC value;
-    # on Postgres (asyncpg) binding an aware datetime to a naive
-    # `TIMESTAMP WITHOUT TIME ZONE` column raises DataError, so the column
-    # type must be `timestamptz`. SQLite ignores the flag (stores ISO text).
+    # Common columns. created_at/updated_at are DateTime(timezone=True) with a
+    # tz-AWARE UTC default — binding those to a naive TIMESTAMP raises DataError on
+    # asyncpg, so the Postgres column must be timestamptz.
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -102,12 +99,9 @@ def get_engine() -> AsyncEngine:
         settings = get_settings()
         connect_args: dict[str, Any] = {}
         if settings.database_url.startswith("sqlite"):
-            # aiosqlite's `timeout` maps to sqlite3's busy handler —
-            # if another writer holds the lock, wait up to 15s before
-            # raising OperationalError("database is locked"). Combined
-            # with WAL mode, this eliminates the bursty contention we
-            # saw when the dispatch loop's long session overlapped
-            # with interactive slash commands.
+            # aiosqlite timeout maps to sqlite3's busy handler: wait up to 15s for another
+            # writer instead of raising "database is locked". With WAL this removes the
+            # dispatch-loop vs slash-command contention.
             connect_args["timeout"] = 15
         _engine = create_async_engine(
             settings.database_url,

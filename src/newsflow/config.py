@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -58,23 +58,17 @@ class Settings(BaseSettings):
     # feed counts on a fast host; lower to ease memory / upstream rate limits.
     feed_max_concurrent: int = 10
     cleanup_interval_hours: int = 24
-    entry_retention_days: int = 7
+    # Must stay ABOVE the weekly digest's 7-day window: cleanup deletes FeedEntry by
+    # created_at, so coinciding horizons silently drop the digest's oldest day.
+    entry_retention_days: int = 10
 
-    # Cap on how old (by published_at) an entry can be and still get
-    # dispatched. Stops feeds that re-serve their archive — or that get
-    # cleanup-then-rediscovered — from pushing year-old articles to users.
-    # NULL published_at always passes (some feeds don't carry a date).
-    # 0 disables the filter.
+    # Max published_at age still eligible for dispatch; 0 disables. NULL always passes.
+    # Stops archive-re-serving feeds from pushing year-old articles.
     max_entry_publish_age_days: int = 14
 
-    # SentEntry rows are the dedupe signal — they record "this channel
-    # already saw this (feed_id, guid) pair", so cleanup of the
-    # FeedEntry doesn't trigger re-delivery. Retention here must be
-    # *much longer* than `entry_retention_days`: if SentEntry is dropped
-    # while the source feed still serves the same GUID, the next fetch
-    # re-creates a FeedEntry and the dispatcher will deliver again.
-    # Default 90 days is generous; storage cost is tiny (one row per
-    # entry per subscription, with subscription_id+feed_id+guid index).
+    # Dedupe signal: "this channel already saw this (feed_id, guid)". Must outlive
+    # entry_retention_days by a wide margin — dropping it while the feed still serves
+    # the guid makes the dispatcher deliver the entry again.
     sent_entry_retention_days: int = 90
 
     # Cache (memory by default, Redis optional)
@@ -92,29 +86,19 @@ class Settings(BaseSettings):
     # Override the built-in digest system prompt. Supports {window} and
     # {lang} placeholders. None → use default.
     digest_system_prompt: str | None = None
-    # When true, dispatcher prepends a visible header (and an `@here`
-    # mention on Discord) so scheduled digests cut through a noisy news
-    # channel. Default off — existing deploys don't start pinging users
-    # after an upgrade. On Discord the bot needs the "Mention Everyone"
-    # permission in the target channel for @here to actually notify;
-    # without it the token appears as literal text but doesn't ping.
+    # Adds a visible header (plus `@here` on Discord) to digest deliveries.
+    # Only the code-added header may ping: Dispatcher.apply_digest_header neutralizes
+    # mass-mention tokens in the LLM body before the send allows @everyone/@here.
     digest_mention_on_delivery: bool = False
-    # When true, each digest delivery pins its first chunk to the channel
-    # and unpins the previous digest's pin, so the channel's pin list
-    # stays at "newest digest only" and users can jump back to it from
-    # the pin icon. Default off — requires "Manage Messages" on Discord /
-    # admin rights on Telegram. Pin failures (missing permission, 50-pin
-    # cap) degrade gracefully: the digest still delivers, the old pin
-    # stays put, and a warning is logged. Silent no-op on webhook.
+    # Pins each digest's first chunk and unpins the previous one. Pin failures degrade
+    # gracefully (digest still delivers, old pin stays, warning logged); webhook no-ops.
     digest_auto_pin: bool = False
 
     # API service (disabled by default)
     api_enabled: bool = False
-    # Loopback by default: GET endpoints expose feed URLs (which often embed
-    # tokens) and error details. The Docker image overrides this to 0.0.0.0
-    # (ENV in the Dockerfile — the published port mapping is the boundary
-    # there); bare-metal deployments that really want LAN/WAN exposure set
-    # API_HOST=0.0.0.0 themselves.
+    # Loopback by default: GET endpoints expose feed URLs (often token-bearing) and
+    # error details. The Docker image overrides to 0.0.0.0; the port mapping is the
+    # boundary there.
     api_host: str = "127.0.0.1"
     api_port: int = 8000
     # Shared secret for API write endpoints (feed mutations + /api/ingest).
@@ -138,28 +122,19 @@ class Settings(BaseSettings):
     # Logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_format: Literal["json", "console"] = "console"
-    # SQLAlchemy engine SQL echo — deliberately decoupled from LOG_LEVEL.
-    # Raising LOG_LEVEL to DEBUG for application troubleshooting must NOT dump
-    # every SQL statement's bound parameters (webhook URL tokens, HMAC secrets,
-    # stored API keys) into the logs. Opt in explicitly with DB_ECHO=true when
-    # you actually want SQL tracing.
+    # Deliberately decoupled from LOG_LEVEL: DEBUG-level app troubleshooting must not
+    # dump bound SQL parameters (webhook tokens, HMAC secrets, stored API keys).
     db_echo: bool = False
 
     # ===== Permissions =====
 
-    # Require group owner/administrator for state-changing Telegram commands
-    # in group chats. Private chats are never restricted. Discord has no
-    # equivalent flag: its command groups carry native default_permissions
-    # (Manage Server) that server admins can retune per role/channel in
-    # Server Settings → Integrations.
+    # Group owner/administrator gate for state-changing Telegram commands in groups;
+    # private chats are never restricted. Discord uses native default_permissions.
     telegram_admin_only: bool = True
 
-    # Global admin user ids (numeric id strings) that always pass the
-    # Telegram group-admin gate. Optional — empty means no bypass. Discord
-    # is governed by its native command permissions instead. NoDecode +
-    # the before-validator accept both `ADMIN_USER_IDS=123,456` and a JSON
-    # list; pydantic-settings' default JSON-only decoding would otherwise
-    # crash startup on the comma form.
+    # Numeric ids that always pass the Telegram group-admin gate; empty = no bypass.
+    # NoDecode + the before-validator accept both `123,456` and a JSON list —
+    # pydantic-settings' JSON-only decoding would crash startup on the comma form.
     admin_user_ids: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     # ===== Hosting service extensions (self-hosted users can ignore) =====
@@ -248,6 +223,35 @@ class Settings(BaseSettings):
             raise ValueError("entry_retention_days must be at least 1")
         return v
 
+    @field_validator(
+        "cleanup_interval_hours",
+        "digest_check_interval_minutes",
+        "translation_cache_ttl_days",
+        "digest_max_input_chars_per_article",
+    )
+    @classmethod
+    def validate_positive_intervals(cls, v: int, info: ValidationInfo) -> int:
+        # A zero/negative interval turns the corresponding sleep-loop into a
+        # busy spin (asyncio.sleep(<=0) returns immediately); a non-positive
+        # TTL/char budget silently disables the feature it configures.
+        if v < 1:
+            raise ValueError(f"{info.field_name} must be at least 1")
+        return v
+
+    @field_validator("api_port")
+    @classmethod
+    def validate_api_port(cls, v: int) -> int:
+        if not 1 <= v <= 65535:
+            raise ValueError("api_port must be a valid TCP port (1-65535)")
+        return v
+
+    @field_validator("max_feeds_per_channel")
+    @classmethod
+    def validate_max_feeds(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("max_feeds_per_channel must be >= 0 (0 = unlimited)")
+        return v
+
     @field_validator("max_entry_publish_age_days")
     @classmethod
     def validate_max_publish_age(cls, v: int) -> int:
@@ -263,8 +267,10 @@ class Settings(BaseSettings):
         return v
 
     def validate_minimal_config(self) -> bool:
-        """Validate that at least one platform token is provided."""
-        return bool(self.discord_token or self.telegram_token)
+        """At least one delivery platform must be configured. A chat-platform
+        token counts, and so does a webhooks.yaml on disk — a headless
+        RSS→webhook pipeline is a complete deployment on its own."""
+        return bool(self.discord_token or self.telegram_token or self.webhooks_enabled)
 
     def get_translation_api_key(self) -> str | None:
         """Get the API key for the configured translation provider."""

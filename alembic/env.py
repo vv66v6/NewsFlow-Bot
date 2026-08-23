@@ -15,10 +15,10 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
 
-# Import models so their tables register on Base.metadata before autogenerate.
-import newsflow.models.digest  # noqa: F401
-import newsflow.models.feed  # noqa: F401
-import newsflow.models.subscription  # noqa: F401
+# Table registration happens in newsflow.models.__init__, which imports every
+# model module. Don't list individual modules here: a hand-maintained copy
+# drifts and reads as if it were the registration point.
+import newsflow.models  # noqa: F401
 from newsflow.config import get_settings
 from newsflow.models.base import Base
 
@@ -27,13 +27,9 @@ config = context.config
 # Override the placeholder URL from alembic.ini with the real runtime URL.
 config.set_main_option("sqlalchemy.url", get_settings().database_url)
 
-# Deliberately NOT calling logging.config.fileConfig(alembic.ini) here.
-# main.py has already configured the root logger; fileConfig — even with
-# disable_existing_loggers=False — would replace the root logger's
-# handler and level with alembic.ini's [logger_root] (level=WARNING),
-# silently dropping every INFO log emitted after upgrade_to_head() runs.
-# alembic's own loggers (`alembic.runtime.migration`, etc.) still propagate
-# to the root logger and print under main.py's format.
+# Deliberately NOT calling fileConfig(alembic.ini): main.py already configured the
+# root logger, and fileConfig would replace its handler and level with
+# [logger_root] WARNING, dropping every INFO emitted after upgrade_to_head().
 
 target_metadata = Base.metadata
 

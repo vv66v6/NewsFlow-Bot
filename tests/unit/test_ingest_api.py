@@ -142,3 +142,29 @@ async def test_ingest_rejects_non_inbound_feed(session):
             _=None,
         )
     assert exc.value.status_code == 404
+
+
+# ── payload bounds ───────────────────────────────────────────────────────────
+
+
+def test_payload_rejects_over_1000_entries():
+    """The endpoint is authenticated, but a leaked key or buggy client must
+    not be able to push unbounded batches — oversize fails as a 422."""
+    from pydantic import ValidationError
+
+    entries = [{"id": str(i)} for i in range(1001)]
+    with pytest.raises(ValidationError):
+        IngestPayload(entries=entries)
+    assert len(IngestPayload(entries=entries[:1000]).entries) == 1000
+
+
+def test_entry_field_length_caps():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        IngestEntry(title="x" * 1025)
+    with pytest.raises(ValidationError):
+        IngestEntry(link="https://e.com/" + "x" * 2048)
+    with pytest.raises(ValidationError):
+        IngestEntry(content="x" * 262_145)
+    assert IngestEntry(title="x" * 1024).title is not None

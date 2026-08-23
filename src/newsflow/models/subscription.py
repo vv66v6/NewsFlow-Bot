@@ -35,11 +35,8 @@ class Subscription(Base):
 
     # User preferences
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    # Silent mode: don't push instant feed messages to the channel, but
-    # still record SentEntry rows so the digest pipeline picks the entries
-    # up. Used by channels that only want periodic AI-generated summaries.
-    # The post-subscribe preview path bypasses this flag (one preview
-    # always goes through so the user sees the subscription confirmed).
+    # Silent mode: no instant push, but SentEntry rows are still recorded so the
+    # digest pipeline picks the entries up. The post-subscribe preview bypasses it.
     silent: Mapped[bool] = mapped_column(Boolean, default=False)
     translate: Mapped[bool] = mapped_column(Boolean, default=True)
     target_language: Mapped[str] = mapped_column(String(10), default="zh-CN")
@@ -48,24 +45,17 @@ class Subscription(Base):
     show_summary: Mapped[bool] = mapped_column(Boolean, default=True)
     show_image: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    # Custom message layout: Markdown-ish text with {placeholder}
-    # substitution (see core/message_template.py for the placeholder set
-    # and rendering semantics). NULL = platform default rendering. When
-    # set, the template fully controls the message text — show_summary is
-    # ignored; show_image still governs image attachment.
+    # Custom message layout with {placeholder} substitution (see core/message_
+    # template.py). When set the template fully controls the text: show_summary is
+    # ignored, show_image still governs image attachment.
     message_template: Mapped[str | None] = mapped_column(Text)
 
-    # Discord-only: mention string ("<@&roleid>" / "<@userid>") delivered
-    # with every entry so the ping actually fires. Always built from a
-    # native slash-command Role/User pick — never free text — and the
-    # adapter whitelists exactly this target via allowed_mentions.
-    # NULL = no mention.
+    # Discord-only mention string, always built from a native Role/User pick, never
+    # free text; the adapter whitelists exactly this target via allowed_mentions.
     mention: Mapped[str | None] = mapped_column(String(64))
 
-    # Telegram-only: forum-topic thread this subscription delivers to.
-    # Recorded at subscribe time when the command ran inside a topic
-    # (is_topic_message only — plain reply threads must not be recorded);
-    # /settopic retargets it later. NULL = the chat's default view.
+    # Telegram-only forum-topic thread. Recorded at subscribe time only when
+    # is_topic_message was set (plain reply threads must not be); /settopic retargets.
     message_thread_id: Mapped[int | None] = mapped_column()
 
     # Filter rule: narrows which entries from this feed actually reach the
@@ -132,12 +122,9 @@ class SentEntry(Base):
     # dispatch loop doesn't keep re-evaluating the same entry every cycle.
     was_filtered: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    # True if this row was written by seed_sent_entries to suppress a
-    # back-catalog entry on a brand-new subscription — i.e. it was NEVER
-    # shown to the channel, only recorded so dispatch skips it. The digest
-    # pipeline must exclude these: the user saw nothing to summarize.
-    # `was_filtered` can't carry this meaning — a filtered entry is opt-in
-    # visible via ChannelDigest.include_filtered, a seeded one never is.
+    # True when seed_sent_entries wrote this row to suppress a back-catalog entry:
+    # never shown to the channel, only recorded so dispatch skips it. The digest
+    # pipeline must exclude these; was_filtered cannot carry the meaning.
     seeded: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Indexes

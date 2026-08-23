@@ -10,11 +10,11 @@
 [![python-telegram-bot](https://img.shields.io/badge/python--telegram--bot-20.7+-0088cc.svg)](https://python-telegram-bot.org/)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ed.svg)](https://www.docker.com/)
 
-English | [简体中文](README_CN.md)
+English | [简体中文](README.zh-CN.md)
 
 </div>
 
-> 📖 **This is the quick-start.** Full command reference, configuration, advanced deployment, architecture, extension guide — all in **[GUIDE.md](GUIDE.md)** (currently in Chinese; English translation welcome as a contribution).
+> 📖 **This is the quick-start.** Full command reference, configuration, advanced deployment, architecture, extension guide — all in **[docs/user-guide.md](docs/user-guide.md)** (currently in Chinese; English translation welcome as a contribution).
 
 ---
 
@@ -87,29 +87,23 @@ Most feed bots do one thing: new post → channel. NewsFlow keeps that part bori
           SQLite file / Postgres (optional)
 ```
 
-Full layered breakdown and module responsibilities in [GUIDE.md §10](GUIDE.md#十架构总览).
+Full layered breakdown and module responsibilities in [docs/user-guide.md §10](docs/user-guide.md#十架构总览).
 
 ---
 
 ## 🚀 Quick Start (Docker)
 
-For **Debian 12 / Ubuntu 22+** — swap the Docker install commands for your distro if needed:
+For any Debian/Ubuntu-family server (the script detects the distro — no more copy-pasting repo lines meant for a different one):
 
 ```bash
-# 1. Install Docker (skip if you already have it)
-sudo apt update && sudo apt install -y ca-certificates curl gnupg
-sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/debian/gpg | \
-    sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-    https://download.docker.com/linux/debian $(lsb_release -cs) stable" | \
-    sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-sudo apt update && sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+# 1. Install Docker (skip if you already have it; official convenience script)
+curl -fsSL https://get.docker.com | sudo sh
 
 # 2. Clone, configure
 git clone https://github.com/Lynthar/NewsFlow-Bot.git
 cd NewsFlow-Bot
 cp .env.example .env
+chmod 600 .env     # it will hold bot tokens — keep other local users out
 nano .env     # fill in at least one DISCORD_TOKEN or TELEGRAM_TOKEN
 
 # 3. Run (pulls the prebuilt multi-arch image from GHCR — no local build)
@@ -134,8 +128,8 @@ You're live when you see `Discord bot logged in as ...` or `Telegram bot started
 | OS | Linux (Debian 12 / Ubuntu 22+ / CentOS etc.) |
 | Python | 3.11 / 3.12 / 3.13 (3.14 not yet — `lxml` has no wheel) |
 | Memory | 256 MiB minimum, 512 MiB recommended |
-| Network | Outbound HTTPS 443 only |
-| Docker | 20.10+ with Compose v2 (or [systemd deployment](GUIDE.md#七高级部署与运维)) |
+| Network | Outbound HTTPS 443 (plus 80 if you subscribe to plain-http feeds) |
+| Docker | 20.10+ with Compose v2 (or [systemd deployment](docs/user-guide.md#七高级部署与运维)) |
 
 ---
 
@@ -164,11 +158,11 @@ You're live when you see `Discord bot logged in as ...` or `Telegram bot started
 /digest enable daily 9   turn on daily digest
 ```
 
-Full reference (30+ commands across both platforms): [GUIDE.md §1](GUIDE.md#一完整命令参考).
+Full reference (30+ commands across both platforms): [docs/user-guide.md §1](docs/user-guide.md#一完整命令参考).
 
-**Webhook delivery** is output-only (no bot commands) — under Docker, `cp samples/webhooks.example.yaml config/webhooks.yaml` (the `config/` dir is mounted into the container), edit, and restart; see [GUIDE.md §4](GUIDE.md#四webhook-推送) or the annotated [`samples/webhooks.example.yaml`](samples/webhooks.example.yaml).
+**Webhook delivery** is output-only (no bot commands) — under Docker, `cp samples/webhooks.example.yaml config/webhooks.yaml` (the `config/` dir is mounted into the container), edit, and restart; see [docs/user-guide.md §4](docs/user-guide.md#四webhook-推送) or the annotated [`samples/webhooks.example.yaml`](samples/webhooks.example.yaml).
 
-**Non-RSS sources** (JSON API, IMAP newsletters, inbound webhook push) are declared the same way in `config/sources.yaml` — see [GUIDE.md §4B](GUIDE.md#四b非-rss-信息源sourcesyaml) or [`samples/sources.example.yaml`](samples/sources.example.yaml). Extras are already in the Docker image; for a bare-metal run use `make install-all`.
+**Non-RSS sources** (JSON API, IMAP newsletters, inbound webhook push) are declared the same way in `config/sources.yaml` — see [docs/user-guide.md §4B](docs/user-guide.md#四b非-rss-信息源sourcesyaml) or [`samples/sources.example.yaml`](samples/sources.example.yaml). Extras are already in the Docker image; for a bare-metal run use `make install-all`.
 
 > Running bare-metal (not Docker)? These files default to `./data/` instead — override with `WEBHOOKS_CONFIG_PATH` / `SOURCES_CONFIG_PATH`.
 
@@ -197,7 +191,7 @@ API_ENABLED=true                         # REST API + inbound /api/ingest
 API_KEY=long-random-string               # required for API writes / inbound push
 ```
 
-Full 30+ variables: [GUIDE.md §2](GUIDE.md#二完整配置项).
+Full 30+ variables: [docs/user-guide.md §2](docs/user-guide.md#二完整配置项).
 
 ---
 
@@ -212,22 +206,22 @@ Expected. A single preview article is pushed within seconds of subscribing; afte
 <details>
 <summary><b>Container keeps restarting, logs show <code>InvalidToken</code></b></summary>
 
-Your `.env` still has the placeholder or a typo. Fix and **`docker compose -f docker/docker-compose.yml up -d newsflow`** — `restart` alone does **not** re-read `.env`; compose only reads env_file at `up` time and caches it into the container config. For any `.env` change you need `up -d` (which will recreate the container when values changed). More on this in [GUIDE.md §7.6](GUIDE.md#76-部署后在线改配置env-的正确姿势).
+Your `.env` still has the placeholder or a typo. Fix and **`docker compose -f docker/docker-compose.yml up -d newsflow`** — `restart` alone does **not** re-read `.env`; compose only reads env_file at `up` time and caches it into the container config. For any `.env` change you need `up -d` (which will recreate the container when values changed). More on this in [docs/user-guide.md §7.6](docs/user-guide.md#76-部署后在线改配置env-的正确姿势).
 </details>
 
 <details>
 <summary><b>How do I customize the AI digest style / translation tone?</b></summary>
 
-Set `TRANSLATION_SYSTEM_PROMPT=` or `DIGEST_SYSTEM_PROMPT=` in `.env` to override the default prompts. Details: [GUIDE.md §3.3](GUIDE.md#33-自定义-ai-提示词).
+Set `TRANSLATION_SYSTEM_PROMPT=` or `DIGEST_SYSTEM_PROMPT=` in `.env` to override the default prompts. Details: [docs/user-guide.md §3.3](docs/user-guide.md#33-自定义-ai-提示词).
 </details>
 
-More FAQ (DNS / translation not working / data reset / upgrade errors / …): [GUIDE.md §15](GUIDE.md#十五常见陷阱--faq).
+More FAQ (DNS / translation not working / data reset / upgrade errors / …): [docs/user-guide.md §15](docs/user-guide.md#十五常见陷阱--faq).
 
 ---
 
 ## 🤝 Contributing
 
-Architecture, layering rules, code style, extension points (adding a new platform / translation provider / API endpoint) are all in **[GUIDE.md §8-17](GUIDE.md#开发--架构)**.
+Architecture, layering rules, code style, extension points (adding a new platform / translation provider / API endpoint) are all in **[docs/user-guide.md §8-17](docs/user-guide.md#开发--架构)**.
 
 Fast dev loop:
 

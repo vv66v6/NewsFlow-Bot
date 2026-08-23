@@ -45,12 +45,9 @@ class WebhookDestination(Base):
     # stall the dispatch loop for all other platforms.
     timeout_s: Mapped[int] = mapped_column(Integer, default=10)
 
-    # Health / circuit breaker — mirrors the feed side's 10-straight-errors
-    # auto-disable. An inactive destination is skipped by the adapter (its
-    # unsent backlog keeps retrying cheaply and flushes on revival);
-    # webhook_sync revives it on the next startup or hot reload, because a
-    # destination still declared in the file is one the operator wants
-    # working.
+    # Health / circuit breaker, mirroring the feed side's 10-straight-errors disable.
+    # An inactive destination is skipped but keeps its backlog; webhook_sync revives
+    # it on startup or hot reload — still being in the file means it is wanted.
     is_active: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default=true(), nullable=False
     )

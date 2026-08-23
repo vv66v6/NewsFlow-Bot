@@ -621,14 +621,9 @@ class SubscriptionRepository:
                 )
             )
 
-        # Oldest first, for two reasons. Chronology: the newest article
-        # should land at the bottom of the chat, not above older ones.
-        # Backlog fairness: with more than `limit` pending, newest-first
-        # let each cycle's fresh entries permanently squeeze out older
-        # ones until retention silently dropped them — oldest-first
-        # drains the backlog across cycles instead. Undated entries sort
-        # first (can't age them; deliver rather than starve), id breaks
-        # ties deterministically.
+        # Oldest first: newest belongs at the bottom of the chat, and newest-first let
+        # fresh entries permanently squeeze out older ones until retention dropped them.
+        # Undated entries sort first; id breaks ties deterministically.
         result = await self.session.execute(
             select(FeedEntry)
             .where(*conditions)

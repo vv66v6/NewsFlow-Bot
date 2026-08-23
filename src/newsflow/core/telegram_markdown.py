@@ -1,18 +1,10 @@
-"""Markdown → Telegram HTML for digest delivery.
+"""Markdown -> Telegram HTML for digest delivery.
 
-The digest pipeline produces plain Markdown: Discord renders it natively
-and webhook consumers get raw text, but Telegram renders neither Markdown
-nor angle-bracket URL wrappers — ``**bold**`` shows as literal asterisks
-and ``<https://…>`` as junk punctuation. This converter covers exactly
-the constructs the digest pipeline emits (bold, ATX headings,
-``[text](url)`` links, angle-wrapped bare URLs) and HTML-escapes
-everything else so Telegram's strict HTML parser can't reject the
-message over stray ``<``/``&``.
+Covers exactly what the digest pipeline emits: bold, ATX headings, ``[text](url)``
+links and angle-wrapped bare URLs. Everything else is HTML-escaped so Telegram's
+strict parser cannot reject the message over a stray ``<`` or ``&``.
 
-Deliberately not a general Markdown engine: unknown constructs pass
-through as escaped literal text, degrading readable rather than failing
-the send. The Telegram adapter additionally falls back to plain text if
-the rendered HTML is still rejected.
+Not a general Markdown engine: unknown constructs pass through as escaped literal text.
 """
 
 import re

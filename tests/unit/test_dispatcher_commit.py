@@ -37,11 +37,9 @@ async def test_dispatch_once_commits_feed_metadata_when_no_new_entries(session, 
             return session
 
         async def __aexit__(self, *a):
-            # Mirror the real AsyncSession context behavior: any writes not
-            # already committed get rolled back on exit. Without this the
-            # test passes even against the bugged code because the pending
-            # UPDATE is still visible to the follow-up refresh() within the
-            # same session — hiding the regression.
+            # Mirror the real AsyncSession context: uncommitted writes roll back on exit.
+            # Without it the test passes against the bugged code, because the pending UPDATE
+            # is still visible to a refresh() in the same session.
             await session.rollback()
             return False
 
@@ -277,21 +275,17 @@ async def test_commit_failure_for_one_subscription_does_not_abort_round(session,
         AsyncMock(return_value=list(subs)),
     )
 
-    # The FIRST per-subscription commit (after A) fails; later ones succeed.
-    # Raising without touching the real commit leaves the transaction open
-    # with A's flushed marks — exactly the state the recovery rollback has
-    # to clean up.
+    # The FIRST per-subscription commit fails; later ones succeed. Raising without
+    # touching the real commit leaves A's flushed marks in an open transaction —
+    # exactly what the recovery rollback must clean up.
     real_commit = type(session).commit
     commit_calls = {"n": 0}
 
     async def flaky_commit(self):
         if self is session:
             commit_calls["n"] += 1
-            # Commit #1 is the fetch-writes commit added before the sub loop
-            # (it releases the SQLite write lock so the webhook breaker's
-            # separate-session accounting can persist). Commit #2 is the per-sub
-            # commit after subscription A — that's the one we make fail,
-            # SQLITE_BUSY-style.
+            # Commit #1 is the fetch-writes commit before the sub loop; commit #2 is the
+            # per-sub commit after subscription A — that is the one made to fail.
             if commit_calls["n"] == 2:
                 raise OperationalError("stmt", None, Exception("database is locked"))
         return await real_commit(self)

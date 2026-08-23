@@ -127,10 +127,9 @@ def _to_ntfy(m: Message) -> WireRequest:
         "Title": _rfc2047(m.display_title[:250]),
         "Tags": "newspaper,rss",
     }
-    # Click/Attach are HTTP *header* values built from (untrusted) feed data.
-    # A CR/LF or non-latin-1 byte would make aiohttp raise ValueError, which
-    # the adapter's ClientError handler doesn't catch — wedging every send to
-    # this destination. Only set them when they're clean http(s) URLs.
+    # Click/Attach become HTTP header values built from untrusted feed data. A CR/LF
+    # or non-latin-1 byte makes aiohttp raise ValueError, which the ClientError
+    # handler misses — set them only for clean http(s) URLs.
     click = _safe_header_url(m.link)
     if click:
         headers["Click"] = click

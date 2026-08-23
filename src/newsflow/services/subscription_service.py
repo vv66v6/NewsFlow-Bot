@@ -146,11 +146,8 @@ class SubscriptionService:
         # add_feed succeeds only with a resolved feed attached
         assert feed is not None
 
-        # Inherit the channel's persisted defaults (ChannelSettings) for a
-        # NEW subscription. A recorded preference wins; otherwise silent
-        # falls back to the legacy all-existing-subs-silent heuristic and
-        # language/translate to the model defaults. Per-feed overrides
-        # still apply afterwards — inheritance happens once, here.
+        # A NEW subscription inherits the channel's persisted ChannelSettings defaults;
+        # per-feed overrides still apply afterwards. Inheritance happens once, here.
         defaults = await self.channel_settings_repo.get(platform, channel_id)
         if defaults is not None and defaults.default_silent is not None:
             inherit_silent = defaults.default_silent
@@ -189,10 +186,9 @@ class SubscriptionService:
                 is_new=False,
             )
 
-        # Seed SentEntry with all but the single most-recent entry. That
-        # entry stays unsent so the user gets one preview article shortly
-        # after subscribing (delivered by Dispatcher.schedule_preview post-commit),
-        # instead of waiting up to a full FETCH_INTERVAL for the first message.
+        # Seed SentEntry with all but the most-recent entry: that one stays unsent so the
+        # user gets a preview shortly after subscribing instead of waiting a full
+        # FETCH_INTERVAL.
         seeded = await self.sub_repo.seed_sent_entries(
             subscription_id=subscription.id,
             feed_id=feed.id,
@@ -315,10 +311,8 @@ class SubscriptionService:
         if not updated:
             return SubscriptionActionResult(success=False, message="Subscription not found")
         message = f"Resumed {feed.title or feed_url}"
-        # The auto-disable notice tells users to run resume "once the source
-        # is working again" — honor that: an auto-disabled feed has no other
-        # user-reachable revival path (fetch skips inactive feeds, so its
-        # error counter can never reset on its own).
+        # An auto-disabled feed has no other user-reachable revival path — fetch skips
+        # inactive feeds, so its error counter can never reset on its own.
         if not feed.is_active:
             feed.reactivate()
             message += " (feed re-enabled; it will be fetched next cycle)"

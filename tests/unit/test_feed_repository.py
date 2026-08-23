@@ -107,3 +107,31 @@ async def test_create_entries_bulk_degenerate_fallback_guids(session):
     )
 
     assert len(created) == 1
+
+
+async def test_create_feed_caps_metadata_like_update_path(session):
+    """A 513-char remote title used to pass create_feed uncapped and fail
+    the very first INSERT on Postgres (update_feed_metadata already
+    truncated) — both paths must cap to the column width."""
+    repo = FeedRepository(session)
+    feed = await repo.create_feed(
+        url="https://example.com/longmeta",
+        title="T" * 600,
+        site_url="https://example.com/" + "p" * 3000,
+    )
+    assert feed.title is not None and len(feed.title) == 512
+    assert feed.site_url is not None and len(feed.site_url) == 2048
+
+
+async def test_update_entry_translation_caps_title(session):
+    repo = FeedRepository(session)
+    feed = await repo.create_feed(url="https://example.com/feed-tr")
+    (entry,) = await repo.create_entries_bulk(
+        feed.id, [{"guid": "g", "title": "T", "link": "https://x/g"}]
+    )
+    await repo.update_entry_translation(entry.id, "译" * 2000, "summary", "zh-CN")
+    await session.flush()
+    refreshed = await repo.get_entry_by_guid(feed.id, "g")
+    assert refreshed is not None
+    assert refreshed.title_translated is not None
+    assert len(refreshed.title_translated) == 1024

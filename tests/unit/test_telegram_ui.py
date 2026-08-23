@@ -285,3 +285,19 @@ async def test_on_callback_menu_help_sends_welcome():
     context.bot.send_message = AsyncMock()
     await on_callback(update, context)
     assert context.bot.send_message.call_args.kwargs["text"] == WELCOME_TEXT
+
+
+# ===== strict on/off argument parsing =====
+
+
+def test_parse_on_off_accepts_explicit_forms_only():
+    """ "onn" (a typo for on) used to parse as False and silently DISABLE
+    the setting; unknown words must return None so commands show usage."""
+    from newsflow.adapters.telegram.bot import _parse_on_off
+
+    for raw in ("on", "ON", "true", "yes", "1", "enable", "enabled"):
+        assert _parse_on_off(raw) is True, raw
+    for raw in ("off", "OFF", "false", "no", "0", "disable", "disabled"):
+        assert _parse_on_off(raw) is False, raw
+    for raw in ("onn", "of", "banana", "", " ", "2"):
+        assert _parse_on_off(raw) is None, raw

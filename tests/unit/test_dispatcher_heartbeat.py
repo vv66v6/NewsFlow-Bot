@@ -183,3 +183,30 @@ async def test_cleanup_loop_heartbeat_ticks_independently_of_cleanup_runs(tmp_pa
     # And several sleep ticks happened (proves the loop iterated past
     # the first cleanup run without re-firing it).
     assert sleep_calls["count"] >= 5
+
+
+def test_clear_stale_heartbeats_removes_previous_runs_files(tmp_path):
+    """Heartbeats live in the persistent data volume. A platform disabled
+    between runs leaves its old file behind, and HEALTHCHECK flags ANY
+    stale file — the container would go permanently unhealthy. Startup
+    must sweep the directory."""
+    from newsflow.main import clear_stale_heartbeats
+
+    hb = tmp_path / "heartbeat"
+    hb.mkdir()
+    (hb / "discord").touch()
+    (hb / "dispatch").touch()
+
+    fake = MagicMock()
+    fake.data_dir = tmp_path
+    clear_stale_heartbeats(fake)
+
+    assert list(hb.iterdir()) == []
+
+
+def test_clear_stale_heartbeats_tolerates_missing_dir(tmp_path):
+    from newsflow.main import clear_stale_heartbeats
+
+    fake = MagicMock()
+    fake.data_dir = tmp_path / "nonexistent"
+    clear_stale_heartbeats(fake)  # must not raise
