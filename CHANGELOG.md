@@ -11,21 +11,20 @@ before you pin a version.
 
 ## [0.9.4] - 2026-08-25
 
-Version numbering: 0.10.0 and 0.10.1 were withdrawn and their tags removed, and
-numbering resumed here at 0.9.4, because this project's minor field does not go
-past 9. Nothing they contained was reverted — all of it is in this release.
-Their source stays reachable by commit (`ca2a8db` and `5d8d43c`). Do not pull
-their images: both carry the article-truncation bug fixed below, and the
-`0.10.0`, `0.10.1` and `0.10` tags are being withdrawn from the registry.
-Pin `0.9.4`.
+Version numbering: this release follows 0.10.1. The minor field in this project
+does not go past 9, so 0.10.0 and 0.10.1 were a misstep — both are withdrawn,
+their tags and their images are gone, and numbering picks up at 0.9.4. Nothing
+they shipped was reverted; templates, mentions and topic delivery are all here.
+Their source stays reachable at `ca2a8db` and `5d8d43c`, but don't rebuild from
+it: both carry the article-truncation bug fixed below. Pin `0.9.4`.
 
 ### Security
 
-- `email_imap` sources now verify the IMAP server's TLS certificate. Connections
-  were encrypted but never verified, which exposed the mailbox password and every
-  message to an active machine-in-the-middle. **This can break an existing
-  setup:** a self-hosted mail server with a self-signed certificate now fails to
-  fetch until the certificate is replaced or the source sets `tls: insecure`.
+- `email_imap` sources now verify the IMAP server's TLS certificate. It encrypted the
+  connection before but checked nothing, leaving the mailbox password and every
+  message readable to anyone in the middle. **This can break an existing setup:**
+  a self-hosted mail server with a self-signed certificate now fails to fetch
+  until you replace the certificate or set `tls: insecure` on that source.
   Mainstream providers (Gmail, Outlook, Fastmail, Yahoo, Zoho) are unaffected.
 - User-supplied filter patterns now run on the `regex` engine with a match
   timeout. The standard library's `re` cannot be interrupted, so a catastrophic
@@ -33,24 +32,24 @@ Pin `0.9.4`.
   patterns fail open with a warning, as before.
 - The Docker Compose file publishes the API port on `127.0.0.1` instead of
   `0.0.0.0`. A VPS has no private interface, and read endpoints are unauthenticated
-  unless `API_KEY` is set. Existing deployments keep their own compose file and are
-  unaffected; put a reverse proxy in front, or change it back deliberately.
+  unless `API_KEY` is set. Your existing compose file is untouched; put a
+  reverse proxy in front, or change it back on purpose.
 
 ### Fixed
 
-- **Large feeds silently lost most of their articles.** Response bodies were
-  size-capped with `StreamReader.read(n)`, which returns only the bytes already
-  buffered, so any body arriving in more than one chunk was cut short with no
-  error anywhere. BBC News parsed as 4 of its 37 entries and the Guardian as 8 of
-  45, while feeds small enough to arrive in one chunk were unaffected. Present in
-  every release up to 0.10.1, in both the RSS path and `json_api` sources.
+- **Large feeds silently lost most of their articles.** The size cap on response bodies
+  used `StreamReader.read(n)`, which hands back only what is already buffered, so
+  any body arriving in more than one chunk got cut off with no error anywhere.
+  BBC News parsed as 4 of its 37 entries and the Guardian as 8 of 45, while feeds
+  small enough to arrive in one chunk were unaffected. Present in every release
+  up to 0.10.1, in both the RSS path and `json_api` sources.
 - Rate-limited webhook deliveries retry once instead of counting toward the
   destination's circuit breaker, which could disable a healthy endpoint after ten
   rate limits in a row. The wait comes from `X-RateLimit-Reset-After`, because
   Discord answers webhook 429s with a `Retry-After` in milliseconds.
-- `email_imap` messages with no parseable `Date` header are stored with no
-  publication date instead of 1900-01-01, which placed them outside
-  `MAX_ENTRY_PUBLISH_AGE_DAYS` and dropped them from every dispatch round.
+- An `email_imap` message whose `Date` header won't parse now stores no
+  publication date instead of 1900-01-01, which had placed it outside
+  `MAX_ENTRY_PUBLISH_AGE_DAYS` and dropped it from every dispatch round.
 
 ### Added
 
@@ -69,7 +68,7 @@ Pin `0.9.4`.
   delete the oldest day a weekly digest still needs.
 - A `webhooks.yaml` on its own now satisfies the startup configuration check: a
   headless RSS-to-webhook deployment no longer needs a Discord or Telegram token.
-- `GUIDE.md` moved to `docs/user-guide.md`, and `README_CN.md` was renamed to
+- `GUIDE.md` is now `docs/user-guide.md`, and `README_CN.md` is now
   `README.zh-CN.md`.
 
 ## [0.10.1] - 2026-08-06 — withdrawn
