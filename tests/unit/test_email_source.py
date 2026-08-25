@@ -4,6 +4,7 @@ registration. The IMAP fetch is stubbed (no server); messages are built offline
 with ``MailMessage.from_bytes``.
 """
 
+import ssl
 from datetime import UTC
 
 import pytest
@@ -98,3 +99,99 @@ def test_email_registered_lazily():
     fetcher = get_source_fetcher("email_imap")
     assert fetcher is not None
     assert hasattr(fetcher, "fetch")
+
+
+# ─── undated mail ────────────────────────────────────────────────────────────
+
+
+def _email_without_date() -> MailMessage:
+    raw = "\r\n".join(
+        [
+            "Message-ID: <undated@example.com>",
+            "From: news@example.com",
+            "Subject: No Date header",
+            "Content-Type: text/plain; charset=utf-8",
+            "",
+            "body",
+            "",
+        ]
+    )
+    return MailMessage.from_bytes(raw.encode())
+
+
+async def test_undated_mail_has_no_published_at(monkeypatch):
+    """imap-tools reports 1900-01-01 when Date is missing. Passing that through
+    puts the entry outside max_entry_publish_age_days, so it would be filtered
+    out of every dispatch and never reach the subscriber."""
+    f = EmailSourceFetcher()
+    monkeypatch.setenv("NF_TEST_IMAP", "x")
+    monkeypatch.setattr(f, "_fetch_sync", lambda *a, **k: [_email_without_date()])
+
+    res = await f.fetch(SourceRequest(url="imap://me@host/INBOX", config=_ok_config()))
+
+    assert res.success
+    assert res.entries[0]["published_at"] is None
+
+
+async def test_dated_mail_still_maps_its_date(monkeypatch):
+    f = EmailSourceFetcher()
+    monkeypatch.setenv("NF_TEST_IMAP", "x")
+    monkeypatch.setattr(f, "_fetch_sync", lambda *a, **k: [_email()])
+
+    res = await f.fetch(SourceRequest(url="imap://me@host/INBOX", config=_ok_config()))
+
+    assert res.entries[0]["published_at"] is not None
+
+
+# ─── TLS ─────────────────────────────────────────────────────────────────────
+
+
+class _CapturingMailBox:
+    """Records the ssl_context the fetcher hands to imap_tools."""
+
+    seen: dict = {}
+
+    def __init__(self, host, port, ssl_context=None):
+        _CapturingMailBox.seen["ssl_context"] = ssl_context
+
+    def login(self, *args, **kwargs):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def fetch(self, **kwargs):
+        return []
+
+
+def _context_for(tls: str) -> ssl.SSLContext:
+    _CapturingMailBox.seen = {}
+    EmailSourceFetcher._fetch_sync(
+        _CapturingMailBox, "imap.example.com", 993, "u", "p", "INBOX", 10, tls
+    )
+    return _CapturingMailBox.seen["ssl_context"]
+
+
+def test_default_tls_verifies_the_certificate():
+    """Without an explicit context imaplib verifies nothing, which hands the
+    mailbox password to anyone able to intercept the connection."""
+    ctx = _context_for("verify")
+    assert ctx.verify_mode is ssl.CERT_REQUIRED
+    assert ctx.check_hostname is True
+
+
+def test_insecure_tls_opts_out():
+    ctx = _context_for("insecure")
+    assert ctx.verify_mode is ssl.CERT_NONE
+    assert ctx.check_hostname is False
+
+
+async def test_unknown_tls_mode_is_rejected(monkeypatch):
+    monkeypatch.setenv("NF_TEST_IMAP", "x")
+    config = _ok_config() | {"tls": "yolo"}
+    res = await EmailSourceFetcher().fetch(SourceRequest(url="imap://x", config=config))
+    assert res.success is False
+    assert "tls" in (res.error or "") and "yolo" in (res.error or "")

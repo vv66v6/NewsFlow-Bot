@@ -35,10 +35,10 @@ from dateutil import parser as date_parser
 
 from newsflow.core.feed_fetcher import (
     DEFAULT_HEADERS,
-    MAX_FEED_SIZE_BYTES,
     MAX_REDIRECTS,
     REDIRECT_STATUSES,
     FetchResult,
+    read_body_capped,
 )
 from newsflow.core.source_fetcher import SourceRequest, register_source_fetcher
 from newsflow.core.url_security import InvalidFeedURLError, validate_feed_url
@@ -186,8 +186,8 @@ class JsonApiSourceFetcher:
                         continue
                     if resp.status >= 400:
                         raise ValueError(f"HTTP {resp.status}")
-                    raw = await resp.content.read(MAX_FEED_SIZE_BYTES + 1)
-                    if len(raw) > MAX_FEED_SIZE_BYTES:
+                    raw = await read_body_capped(resp.content)
+                    if raw is None:
                         raise ValueError("response exceeds size limit")
                     return raw
             raise ValueError(f"too many redirects (>{MAX_REDIRECTS})")

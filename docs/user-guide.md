@@ -505,6 +505,25 @@ DIGEST_SYSTEM_PROMPT="Produce a one-screen brief in {lang} covering the past {wi
 
 通过 `OPENAI_BASE_URL` 指向任意 OpenAI-compatible 端点即可换 provider，无需改代码。
 
+### 3.5 接本地大模型（Ollama / vLLM / LM Studio / LocalAI）
+
+```bash
+TRANSLATION_ENABLED=true
+TRANSLATION_PROVIDER=openai
+OPENAI_BASE_URL=http://localhost:11434/v1
+OPENAI_MODEL=qwen2.5:14b
+OPENAI_API_KEY=any-non-empty-string
+DIGEST_MODEL=qwen2.5:14b
+```
+
+三个容易踩的点：
+
+- **`OPENAI_API_KEY` 必须非空，哪怕本地服务根本不校验它。** 翻译与 digest 两个工厂都拿它当「是否已配置」的开关，留空就把功能**静默关掉**（日志只有一行 `Digest disabled: ...`），看起来像功能坏了。填任意字符串即可。
+- **翻译与 digest 共用同一个 `OPENAI_BASE_URL` 和同一个 key，只有模型名分开**（`OPENAI_MODEL` / `DIGEST_MODEL`）。所以做不到「翻译走本地、digest 走云端」——要么都本地，要么都云端。
+- **Docker 部署下 `localhost` 指的是容器自己。** 模型服务跑在宿主机就要写 `host.docker.internal`，或者把它接进同一个 compose 网络。
+
+**选型提示**：翻译对模型能力要求不高，本地小模型够用。digest 不一样——来源清单是代码从模型输出的 `[N]` 引文里拼出来的（见 §十一），模型若不稳定遵守这个约定，正文照出但来源清单会残缺。digest 建议用参数量大一些的模型。
+
 ---
 
 ## 四、Webhook 推送
@@ -748,11 +767,17 @@ sources:
       host: imap.example.com
       user: me@example.com
       password_env: NEWSFLOW_IMAP_PASS  # 存密码的【环境变量名】
+      port: 993                         # 可选，IMAPS 端口，默认 993
+      tls: verify                       # 可选，verify（默认）或 insecure
       mailbox: INBOX                    # 可选，默认 INBOX
       limit: 50                         # 可选，每轮取最新 N 封
 ```
 
 > 🔒 **密码从不入库**：`config` 里只放 `password_env`（环境变量**名**），真正的密码放 `.env` / 环境。请用**应用专用密码**，不是主密码。guid = 邮件 Message-ID，跨轮精确去重。
+
+> 🔒 **`tls: verify` 是默认，别随手改成 `insecure`**：连接虽然是 IMAPS，但不校验证书就等于把邮箱密码和全部邮件内容交给任何能中间人的一方。Gmail / Outlook / Fastmail 这类服务商证书有效，不用动这个键。只有**自建邮件服务器且用自签证书**时才需要 `tls: insecure`——更好的做法是给服务器换一张受信任的证书。默认校验失败时报错会直接点名这个键。
+
+> **没有 `Date` 头的邮件按「无日期」处理**（`published_at` 为空），而不是记成 1900 年。这是有意的：只有空日期能豁免 `MAX_ENTRY_PUBLISH_AGE_DAYS` 的时效过滤，记成 1900 年会让这类邮件被静默过滤掉、永远投递不出去。
 
 **`webhook_inbound`** — 入站推送：外部系统把条目 POST 进来，**不轮询**（无额外依赖）。
 

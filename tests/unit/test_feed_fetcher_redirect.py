@@ -25,6 +25,13 @@ class _FakeContent:
     async def read(self, n: int = -1) -> bytes:
         return self._body[:n] if n >= 0 else self._body
 
+    async def iter_chunked(self, size: int):
+        # Deliberately tiny chunks. A real body arrives in pieces, and capping
+        # the read with read(n) would silently keep only the first one.
+        step = 16
+        for i in range(0, len(self._body), step):
+            yield self._body[i : i + step]
+
 
 class _FakeResp:
     def __init__(

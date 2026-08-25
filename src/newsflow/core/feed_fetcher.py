@@ -46,6 +46,28 @@ MAX_FEED_SIZE_BYTES = 5 * 1024 * 1024
 MAX_REDIRECTS = 5
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
+# Streaming read granularity for read_body_capped.
+_READ_CHUNK_BYTES = 64 * 1024
+
+
+async def read_body_capped(
+    content: aiohttp.StreamReader, cap: int = MAX_FEED_SIZE_BYTES
+) -> bytes | None:
+    """Read the whole response body, or None when it exceeds `cap`.
+
+    Never size-cap with ``StreamReader.read(n)``: it returns only what is
+    already buffered, so a body arriving in several chunks gets truncated
+    silently and a large feed then parses into a few entries with no error.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in content.iter_chunked(_READ_CHUNK_BYTES):
+        total += len(chunk)
+        if total > cap:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 
 @dataclass
 class FetchResult:
@@ -231,8 +253,8 @@ class FeedFetcher:
 
                     # Read streaming, capped. A server that lies about
                     # Content-Length (or omits it) can't drain our memory.
-                    raw = await response.content.read(MAX_FEED_SIZE_BYTES + 1)
-                    if len(raw) > MAX_FEED_SIZE_BYTES:
+                    raw = await read_body_capped(response.content)
+                    if raw is None:
                         logger.warning(f"Feed {url} exceeded size limit mid-stream")
                         return FetchResult(
                             url=url,

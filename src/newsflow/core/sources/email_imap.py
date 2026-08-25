@@ -9,6 +9,8 @@ newsletters that have no RSS. Optional dependency: ``imap-tools`` (extra
     user:          login user                                        (required)
     password_env:  NAME of the env var holding the password          (required)
     port:          IMAP SSL port (default 993)
+    tls:           "verify" (default) or "insecure"; "insecure" accepts any
+                   certificate, exposing the password to an active MITM
     mailbox:       folder to read (default "INBOX")
     limit:         max newest messages to fetch per poll (default 50)
 
@@ -24,6 +26,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import ssl
 from datetime import UTC, datetime
 from typing import Any
 
@@ -31,6 +34,11 @@ from newsflow.core.feed_fetcher import FetchResult
 from newsflow.core.source_fetcher import SourceRequest, register_source_fetcher
 
 logger = logging.getLogger(__name__)
+
+_TLS_MODES = frozenset({"verify", "insecure"})
+
+# imap-tools hands back this value when the Date header is missing or unparseable.
+_NO_DATE = datetime(1900, 1, 1)
 
 
 def _fail(url: str, error: str) -> FetchResult:
@@ -80,10 +88,23 @@ class EmailSourceFetcher:
         port = _int(config.get("port"), 993)
         mailbox = config.get("mailbox") or "INBOX"
         limit = _int(config.get("limit"), 50)
+        tls = str(config.get("tls") or "verify").lower()
+        if tls not in _TLS_MODES:
+            return _fail(
+                req.url, f"email: config.tls must be one of {sorted(_TLS_MODES)}, got {tls!r}"
+            )
 
         try:
             messages = await asyncio.to_thread(
-                self._fetch_sync, MailBox, host, port, user, password, mailbox, limit
+                self._fetch_sync, MailBox, host, port, user, password, mailbox, limit, tls
+            )
+        except ssl.SSLCertVerificationError as e:
+            # Certificates went unchecked before this knob existed, so a self-hosted
+            # server that used to work now fails and the operator needs the way out.
+            return _fail(
+                req.url,
+                f"{type(e).__name__}: {e} — add `tls: insecure` to this source's config "
+                "to accept it anyway (that exposes the password to an active MITM)",
             )
         except Exception as e:
             # Connection/login/protocol failure — surface without the password.
@@ -101,11 +122,20 @@ class EmailSourceFetcher:
         password: str,
         mailbox: str,
         limit: int,
+        tls: str,
     ) -> list[Any]:
         """Blocking IMAP fetch, run in a worker thread. Newest first and
         read-only (mark_seen=False) — Message-ID dedupe makes re-fetching the
         same window each cycle harmless."""
-        with mailbox_cls(host, port).login(user, password, initial_folder=mailbox) as mb:
+        # Always pass a context: imaplib's implicit one verifies nothing, which hands
+        # the mailbox password to anyone able to intercept the connection.
+        context = ssl.create_default_context()
+        if tls == "insecure":
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+        with mailbox_cls(host, port, ssl_context=context).login(
+            user, password, initial_folder=mailbox
+        ) as mb:
             return list(mb.fetch(reverse=True, limit=limit, mark_seen=False, bulk=True))
 
     @staticmethod
@@ -119,6 +149,10 @@ class EmailSourceFetcher:
             guid = hashlib.sha256(basis.encode("utf-8")).hexdigest()
 
         published: datetime | None = msg.date
+        if published is not None and published.replace(tzinfo=None) == _NO_DATE:
+            # Must land as NULL, not as 1900: only NULL is exempt from
+            # max_entry_publish_age_days, so the sentinel silently drops the mail.
+            published = None
         if published is not None:
             if published.tzinfo is None:
                 published = published.replace(tzinfo=UTC)

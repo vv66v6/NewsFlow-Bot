@@ -50,6 +50,12 @@ sources:
       password_env: NEWSFLOW_IMAP_PASS   # NAME of the env var holding the app
                                          # password — the password is NEVER
                                          # stored here or in the database
+      port: 993                          # optional, IMAPS port (default 993)
+      tls: verify                        # optional: verify (default) | insecure.
+                                         # `insecure` accepts any certificate, which
+                                         # hands the password to an active MITM —
+                                         # only for a self-hosted server with a
+                                         # self-signed cert, and prefer fixing the cert
       mailbox: INBOX                     # optional (default INBOX)
       limit: 50                          # optional, newest N messages per poll
     subscribers:
