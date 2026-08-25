@@ -50,8 +50,9 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE }}
-          # latest=auto → :latest is applied to the newest semver tag only,
-          # never to plain main pushes (those get :edge).
+          # latest=auto applies :latest to every non-prerelease semver tag without
+          # comparing it against existing ones — pushing an old tag would republish
+          # it as :latest. Disable this workflow before backfilling tags.
           flavor: |
             latest=auto
           tags: |

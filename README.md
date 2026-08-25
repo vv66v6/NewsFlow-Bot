@@ -15,6 +15,8 @@ English | [简体中文](README.zh-CN.md)
 </div>
 
 > 📖 **This is the quick-start.** Full command reference, configuration, advanced deployment, architecture, extension guide — all in **[docs/user-guide.md](docs/user-guide.md)** (currently in Chinese; English translation welcome as a contribution).
+>
+> 📋 Upgrading? **[CHANGELOG.md](CHANGELOG.md)** lists what changed, and **[docs/compatibility.md](docs/compatibility.md)** says what the version number promises — the project is still `0.x`, so configuration can still change between minor releases.
 
 ---
 
@@ -229,7 +231,7 @@ Fast dev loop:
 uv venv --python 3.13
 uv pip install -e ".[all]"
 uv pip install pytest pytest-asyncio ruff mypy
-.venv/bin/pytest tests/ -v     # 658 tests   (Windows: .venv\Scripts\pytest)
+.venv/bin/pytest tests/ -v     # 730 tests   (Windows: .venv\Scripts\pytest)
 .venv/bin/ruff check src/
 ```
 

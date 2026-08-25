@@ -15,6 +15,8 @@
 </div>
 
 > 📖 **本文是快速上手指引**。完整的命令、配置、高级部署、设计决策、扩展开发等细节见 **[docs/user-guide.md](docs/user-guide.md)**。
+>
+> 📋 准备升级？**[CHANGELOG.md](CHANGELOG.md)** 列出每版改了什么，**[docs/compatibility.md](docs/compatibility.md)** 说明版本号承诺了什么——项目仍是 `0.x`，配置面在小版本之间仍可能变动。
 
 ---
 
@@ -229,7 +231,7 @@ API_KEY=一串足够长的随机字符串            # API 写操作 / 入站推
 uv venv --python 3.13
 uv pip install -e ".[all]"
 uv pip install pytest pytest-asyncio ruff mypy
-.venv/bin/pytest tests/ -v     # 658 个测试   (Windows: .venv\Scripts\pytest)
+.venv/bin/pytest tests/ -v     # 730 个测试   (Windows: .venv\Scripts\pytest)
 .venv/bin/ruff check src/
 ```
 
