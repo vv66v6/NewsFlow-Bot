@@ -514,6 +514,8 @@ DIGEST_SYSTEM_PROMPT="Produce a one-screen brief in {lang} covering the past {wi
 ### 4.1 什么时候用
 
 - 想发到 Slack / ntfy / 飞书（Lark）/ 企业微信，但不想为每个再写一个完整 adapter
+- 想推到 Discord 频道但**不想装 bot**：频道设置里建个 webhook 就行，不需要 bot token、不需要把应用邀请进服务器，也不需要「管理服务器」权限。代价是没有斜杠命令、按钮面板和置顶，投递本身完全一样
+- 想推到 Matrix 房间（经 [matrix-hookshot](https://matrix-org.github.io/matrix-hookshot/latest/setup/webhooks.html) 的 generic webhook）
 - 想让 n8n / Zapier / 自己的后端接到 RSS 事件做二次处理（触发 CI、入库、转发等）
 - 想给个人手机推送最新文章（ntfy 自托管或 ntfy.sh）
 
@@ -531,7 +533,7 @@ DIGEST_SYSTEM_PROMPT="Produce a one-screen brief in {lang} covering the past {wi
 destinations:
   <name>:                            # 用户可读别名，订阅用它引用
     url: <http endpoint>
-    format: generic | slack | ntfy | lark | wecom
+    format: generic | slack | discord | matrix | ntfy | lark | wecom
     secret: <可选, HMAC-SHA256 key>
     headers:                         # 可选, 任意自定义 HTTP headers
       Authorization: "Bearer xxx"
@@ -545,7 +547,7 @@ subscriptions:
     - <feed_url>
 ```
 
-**完整带注释的示例**：`samples/webhooks.example.yaml` —— Slack / ntfy / 飞书 / 企业微信 / n8n 五种目的地全覆盖。
+**完整带注释的示例**：`samples/webhooks.example.yaml` —— Slack / Discord / Matrix / ntfy / 飞书 / 企业微信 / n8n 七种目的地全覆盖。
 
 ### 4.4 Payload 格式
 
@@ -555,9 +557,15 @@ subscriptions:
 |---|---|---|
 | `generic` | `application/json` | NewsFlow 自定义 JSON（见下） |
 | `slack` | `application/json` | Slack [Block Kit](https://api.slack.com/block-kit)，含 fallback text |
+| `discord` | `application/json` | Discord [embed](https://discord.com/developers/docs/resources/webhook#execute-webhook)，标题带链接、摘要进 Summary 字段、来源进 footer |
+| `matrix` | `application/json` | matrix-hookshot generic webhook 的 `text` + `html` 双体 |
 | `ntfy` | `text/plain` | body 是摘要；标题 / 点击链接 / 附图走 HTTP headers（`Title` / `Click` / `Attach`，非 ASCII 用 RFC 2047 编码） |
 | `lark` | `application/json` | 飞书 / Lark post 卡片（`msg_type: "post"`） |
 | `wecom` | `application/json` | 企业微信群机器人 markdown（`msgtype: "markdown"`） |
+
+**discord 格式**：URL 在「频道设置 → 整合 → 创建 Webhook」里拿，和 bot token 无关。文章正文全部放在 embed 里，且 payload 固定带 `allowed_mentions: {"parse": []}` —— feed 里出现 `@everyone` 也不会真的通知任何人。标题走 embed 的 title 字段而非 markdown 链接，所以标题里的 `](` 无法伪造出可点链接。想推到子区（thread）就直接把 `?thread_id=<id>` 拼在 URL 末尾，bot 原样使用。
+
+**matrix 格式**：URL 指向 matrix-hookshot 的 `/webhook/<id>`。**不要给这个 webhook 配 transformation function** —— 我们发的 `text` / `html` 正是 hookshot 默认识别的键，配了 JS 转换反而会把它们覆盖掉。feed 文本在 html 侧全部转义，不依赖客户端的标签白名单。
 
 **generic 格式**（推荐给 n8n / Zapier / 自写端点）：
 
@@ -639,25 +647,42 @@ def verify(body: bytes, header_value: str, secret: str) -> bool:
 | 自己验签总是失败 | 见 4.5 "关键点" —— 必须用收到的原始字节，不是反序列化后的对象 |
 | 飞书 / 企业微信 URL 里含签名参数，发不出去 | 把完整 URL（含 `?key=...` 或签名参数）原样贴进 yaml；bot 不会重组 URL |
 | 改 yaml 后重启没变化 | 检查启动日志 `webhook_sync: N destination(s), M subscription(s)`；若数量不符，说明解析器没拿到最新文件 |
+| Discord 收到 HTTP 400 / 什么都没发出来 | 目的地填了 `format: generic`（或漏填）。Discord 原生 webhook 只认 `content` / `embeds`，收到我们的自定义 JSON 会直接 400 —— 改成 `format: discord` |
+| Matrix 房间里出现的是一整包 JSON | 该 hookshot webhook 配了 transformation function，把我们的 `text` / `html` 覆盖了；删掉转换脚本即可 |
+| 日志出现 `rate-limited; retrying in Ns` | 接收端在限流。发送会按对方给的等待时间重试一次，**不计入熔断计数**；等待超过 5 秒则跳过本轮，条目留到下一轮再发（分发是串行的，不能为一个端点卡住其他平台） |
 | 日志出现 `auto-disabled after 10 straight failures` | **目的地熔断**：连续 10 次发送失败（HTTP 非 2xx / 超时 / 连接错）后该 destination 自动停用，不再发起网络请求（对齐 feed 侧的自动禁用机制）。修好端点后热重载（`POST /api/admin/reload` 或 SIGHUP）或重启即恢复——仍在文件里声明 = 你想让它工作；保留期内未投递的积压会随即补发。任一次成功也会清零失败计数 |
 
 > **未知字段现在是硬错误**：`webhooks.yaml` / `sources.yaml` 里拼错的键（如 `secert:`）过去被静默忽略（HMAC 签名就这样无声消失过），现在直接中止启动并列出合法键。升级后若启动失败，按报错清理多余键即可；部署前可用 `make checkconfig` 离线预检（§7.6）。
 
 ### 4.8 扩展一个新 format
 
-比如要加 "Discord webhook"（Discord 有独立的 webhook URL，和 bot token 不同），在 `src/newsflow/adapters/webhook/formats.py` 加两个函数：
+比如要加 "Microsoft Teams"（现在只能走 Power Automate Workflows 的 webhook，老的 Office 365 connector 已于 2026 年 5 月停用），在 `src/newsflow/adapters/webhook/formats.py` 加两个函数：
 
 ```python
-def _to_discord(m: Message) -> WireRequest:
+def _to_teams(m: Message) -> WireRequest:
     return _json({
-        "content": f"**{m.display_title}**\n{m.display_summary}\n{m.link}"
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [
+                    {"type": "TextBlock", "text": m.display_title,
+                     "weight": "bolder", "wrap": True},
+                    {"type": "TextBlock", "text": m.display_summary, "wrap": True},
+                ],
+            },
+        }],
     })
 
-def _to_discord_text(text: str) -> WireRequest:
-    return _json({"content": text})
+def _to_teams_text(text: str) -> WireRequest:
+    ...  # 同样的信封，body 里放一个 TextBlock
 ```
 
-然后在文件尾的 `_ENTRY_CONVERTERS` 和 `_TEXT_CONVERTERS` 两个 dict 里各加一行 `"discord": _to_discord` / `"discord": _to_discord_text`。完事。不需要改 adapter 主体、sync 逻辑、model 或 migration —— 只是往 dispatch 表里加了一种选项。
+然后在文件尾的 `_ENTRY_CONVERTERS` 和 `_TEXT_CONVERTERS` 两个 dict 里各加一行 `"teams": _to_teams` / `"teams": _to_teams_text`。完事。不需要改 adapter 主体、sync 逻辑、model 或 migration —— 只是往 dispatch 表里加了一种选项，`SUPPORTED_FORMATS` 和 YAML 校验会自动跟上。
+
+**但上线前一定要拿真端点打一遍。** 接收方的实际行为和它自己的文档常常对不上：Discord 的 429 响应里 `Retry-After` 头填的是毫秒（`1922`），而 HTTP 规范规定该头是秒 —— 只看文档写出来的重试逻辑会把每次限流都误判成「要等半小时」。Teams 更甚，payload 形状还取决于那条 flow 里「发布卡片」动作怎么配。
 
 ---
 

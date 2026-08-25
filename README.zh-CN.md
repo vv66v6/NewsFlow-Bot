@@ -59,7 +59,7 @@
 | 🔔 **提及与话题** | Discord 按 feed @角色/@用户、真响铃（默认 ping 安全基线——feed 内容永远 @ 不到人）；Telegram 论坛话题定向投递（`/feed mention` · `/settopic`） |
 | 📡 **RSS / Atom / JSON Feed** | `feedparser` + `aiohttp`，条件请求 / 并发 / SSRF 校验 / 大小上限；粘网站首页自动发现 feed，另有 `gh:` / `gnews:` / `yt:` … 简写 |
 | 🌐 **双平台推送** | Discord 斜杠命令 + Telegram 前缀命令并发工作 |
-| 🔌 **Webhook（出站）** | 声明式 `webhooks.yaml` 推送到 Slack / ntfy / 飞书 / 企业微信 / n8n / Zapier / 任意 HTTP 端点；支持 HMAC-SHA256 签名 |
+| 🔌 **Webhook（出站）** | 声明式 `webhooks.yaml` 推送到 Slack / Discord / Matrix / ntfy / 飞书 / 企业微信 / n8n / Zapier / 任意 HTTP 端点；支持 HMAC-SHA256 签名。走 Discord 频道 webhook 不需要 bot token——不用邀请进服务器，也没有常驻连接 |
 | 📥 **入站 ingest API** | `POST /api/ingest/{source}`（API key 鉴权）让 n8n / CI / 脚本把条目推进 NewsFlow |
 | 🎯 **关键词过滤** | 单订阅 include/exclude 关键词或 `/正则/`，被过滤条目不消耗翻译 API |
 | 📋 **OPML 导入导出** | 从 Feedly / Reeder 搬家；仓库带 22 源预置清单 |

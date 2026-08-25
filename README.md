@@ -59,7 +59,7 @@ Most feed bots do one thing: new post → channel. NewsFlow keeps that part bori
 | 🔔 **Mentions & topics** | Per-feed Discord role/user pings that actually notify (ping-safe baseline — feed content can never `@everyone`); Telegram forum-topic routing (`/feed mention` · `/settopic`) |
 | 📡 **RSS / Atom / JSON Feed** | `feedparser` + `aiohttp`, conditional requests, concurrent fetch, SSRF guard, size cap; paste a site homepage to auto-discover its feed, plus `gh:` / `gnews:` / `yt:` … shortcuts |
 | 🌐 **Multi-platform** | Discord slash commands + Telegram prefix commands in one process |
-| 🔌 **Webhook (outbound)** | Push to Slack / ntfy / Feishu / Work-WeChat / n8n / Zapier / any HTTP endpoint via declarative `webhooks.yaml`; HMAC-SHA256 signing supported |
+| 🔌 **Webhook (outbound)** | Push to Slack / Discord / Matrix / ntfy / Feishu / Work-WeChat / n8n / Zapier / any HTTP endpoint via declarative `webhooks.yaml`; HMAC-SHA256 signing supported. A Discord channel webhook needs no bot token — no invite, no gateway connection |
 | 📥 **Inbound ingest API** | `POST /api/ingest/{source}` (API-key auth) lets n8n / CI / scripts push entries into NewsFlow |
 | 🎯 **Keyword filter** | Per-subscription include/exclude keywords or `/regex/`; filtered entries skip translate |
 | 📋 **OPML import/export** | Migrate from Feedly / Reeder; repo ships a curated 22-feed OPML |

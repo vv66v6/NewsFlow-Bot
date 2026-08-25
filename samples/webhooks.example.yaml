@@ -21,6 +21,24 @@ destinations:
     translate: false        # don't call the translation API for Slack delivery
     language: en            # ignored when translate=false
 
+  # Discord channel webhook — no bot token, no invite, no gateway connection.
+  # Get the URL from Channel Settings → Integrations → Create Webhook.
+  # Append ?thread_id=<id> to post into a thread; the URL is used as written.
+  discord-news:
+    url: https://discord.com/api/webhooks/123456789012345678/your-webhook-token-here
+    format: discord
+    translate: false
+    language: en
+
+  # Matrix room via matrix-hookshot's generic webhook. Do NOT configure a
+  # transformation function on it: `format: matrix` already sends the `text` +
+  # `html` keys hookshot reads by default, and a script would override them.
+  matrix-room:
+    url: https://hookshot.example.com/webhook/00000000-0000-0000-0000-000000000000
+    format: matrix
+    translate: false
+    language: en
+
   # ntfy.sh public broker (or your self-hosted instance). Title / Click / Tags
   # map to ntfy's HTTP-header protocol.
   ntfy-personal:
@@ -68,6 +86,12 @@ subscriptions:
   slack-engineering:
     - https://hnrss.org/frontpage
     - https://rss.arstechnica.com/arstechnica/index
+
+  discord-news:
+    - https://hnrss.org/frontpage
+
+  matrix-room:
+    - https://lobste.rs/rss
 
   ntfy-personal:
     - https://feeds.bbci.co.uk/news/rss.xml

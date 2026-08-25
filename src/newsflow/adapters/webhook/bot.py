@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import hmac
 import logging
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
@@ -33,6 +34,26 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+def _retry_after_seconds(headers: Mapping[str, str], cap: float) -> float | None:
+    """How long to wait before retrying a rate-limited send.
+
+    Returns:
+        Seconds to wait; 1.0 when no usable header is present (`Retry-After`
+        may legally be an HTTP-date); None when the wait exceeds `cap` and the
+        caller should defer to the next dispatch round rather than stall.
+    """
+    # X-RateLimit-Reset-After first: Discord answers webhook 429s with a
+    # Retry-After in milliseconds, which read as seconds defers every entry.
+    raw = headers.get("X-RateLimit-Reset-After") or headers.get("Retry-After")
+    if raw is None:
+        return 1.0
+    try:
+        delay = float(raw)
+    except ValueError:
+        return 1.0
+    return None if delay > cap else max(0.0, delay)
 
 
 class WebhookAdapter(BaseAdapter):
@@ -112,10 +133,6 @@ class WebhookAdapter(BaseAdapter):
     async def _post(self, dest: WebhookDestination, wire: WireRequest) -> bool:
         """POST the wire body to dest.url with format-default headers, any
         user-supplied headers, and an HMAC signature if dest.secret is set."""
-        if self._session is None or self._session.closed:
-            logger.error("webhook send attempted with no open aiohttp session")
-            return False
-
         headers: dict[str, str] = dict(wire.headers)
         if dest.headers:
             # Cast to str — SQLAlchemy JSON returns whatever the user wrote,
@@ -132,39 +149,72 @@ class WebhookAdapter(BaseAdapter):
         host = urlsplit(dest.url).netloc or "<no-host>"
         timeout = aiohttp.ClientTimeout(total=max(1, dest.timeout_s))
 
-        try:
-            # allow_redirects=False: a webhook answering a POST with a redirect is a
-            # misconfiguration, and following it would re-send the signed body and auth
-            # headers to a URL the operator never vetted.
-            async with self._session.post(
-                dest.url, data=wire.body, headers=headers, timeout=timeout, allow_redirects=False
-            ) as resp:
-                if 200 <= resp.status < 300:
-                    await self._record_send_result(dest, ok=True)
-                    return True
-                # Read a small slice of the body for diagnostics without
-                # letting a misbehaving server push megabytes into our logs.
-                snippet = (await resp.content.read(512)).decode("utf-8", errors="replace")
-                logger.warning(f"webhook {dest.name} ({host}) HTTP {resp.status}: {snippet!r}")
-                await self._record_send_result(dest, ok=False, error=f"HTTP {resp.status}")
+        for attempt in range(2):
+            # Re-checked per attempt: shutdown can close the session while the
+            # retry below is sleeping.
+            if self._session is None or self._session.closed:
+                logger.error("webhook send attempted with no open aiohttp session")
                 return False
-        except TimeoutError:
-            logger.warning(f"webhook {dest.name} ({host}) timed out after {dest.timeout_s}s")
-            await self._record_send_result(dest, ok=False, error=f"timeout after {dest.timeout_s}s")
-            return False
-        except aiohttp.ClientError as e:
-            logger.warning(f"webhook {dest.name} ({host}) client error: {e}")
-            await self._record_send_result(dest, ok=False, error=str(e))
-            return False
-        except ValueError as e:
-            # aiohttp raises ValueError on an illegal header value. Treat it as a failed send
-            # rather than letting it escape and wedge the entry in the dispatch loop.
-            logger.warning(f"webhook {dest.name} ({host}) bad header/request: {e}")
-            await self._record_send_result(dest, ok=False, error=str(e))
-            return False
+            try:
+                # allow_redirects=False: a webhook answering a POST with a redirect is a
+                # misconfiguration, and following it would re-send the signed body and auth
+                # headers to a URL the operator never vetted.
+                async with self._session.post(
+                    dest.url,
+                    data=wire.body,
+                    headers=headers,
+                    timeout=timeout,
+                    allow_redirects=False,
+                ) as resp:
+                    if 200 <= resp.status < 300:
+                        await self._record_send_result(dest, ok=True)
+                        return True
+                    if resp.status == 429:
+                        # The receiver is pacing us, not failing. Neither branch touches the
+                        # breaker: 10 rate-limits in a row would disable a healthy endpoint,
+                        # and crediting a success would clear real failures.
+                        delay = _retry_after_seconds(resp.headers, self._MAX_RETRY_AFTER_S)
+                        if attempt == 0 and delay is not None:
+                            logger.info(
+                                f"webhook {dest.name} ({host}) rate-limited; retrying in {delay}s"
+                            )
+                            await asyncio.sleep(delay)
+                            continue
+                        logger.warning(
+                            f"webhook {dest.name} ({host}) rate-limited; "
+                            f"deferring to the next dispatch round"
+                        )
+                        return False
+                    # Read a small slice of the body for diagnostics without
+                    # letting a misbehaving server push megabytes into our logs.
+                    snippet = (await resp.content.read(512)).decode("utf-8", errors="replace")
+                    logger.warning(f"webhook {dest.name} ({host}) HTTP {resp.status}: {snippet!r}")
+                    await self._record_send_result(dest, ok=False, error=f"HTTP {resp.status}")
+                    return False
+            except TimeoutError:
+                logger.warning(f"webhook {dest.name} ({host}) timed out after {dest.timeout_s}s")
+                await self._record_send_result(
+                    dest, ok=False, error=f"timeout after {dest.timeout_s}s"
+                )
+                return False
+            except aiohttp.ClientError as e:
+                logger.warning(f"webhook {dest.name} ({host}) client error: {e}")
+                await self._record_send_result(dest, ok=False, error=str(e))
+                return False
+            except ValueError as e:
+                # aiohttp raises ValueError on an illegal header value. Treat it as a failed send
+                # rather than letting it escape and wedge the entry in the dispatch loop.
+                logger.warning(f"webhook {dest.name} ({host}) bad header/request: {e}")
+                await self._record_send_result(dest, ok=False, error=str(e))
+                return False
+        return False
 
     # Consecutive-failure threshold; mirrors Feed.mark_error's hardcoded 10.
     _MAX_CONSECUTIVE_ERRORS = 10
+
+    # Ceiling on a 429 wait. Dispatch is serial, so a long sleep here delays every
+    # other destination and platform — same reason timeout_s is capped.
+    _MAX_RETRY_AFTER_S = 5.0
 
     async def _record_send_result(
         self, dest: WebhookDestination, *, ok: bool, error: str | None = None

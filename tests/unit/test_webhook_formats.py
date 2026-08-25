@@ -205,6 +205,111 @@ def test_wecom_summary_truncated():
     assert len(content) < 2000
 
 
+# ─── discord ─────────────────────────────────────────────────────────────────
+
+
+def test_discord_builds_embed():
+    wire = build_payload("discord", _make_message())
+    payload = json.loads(wire.body)
+    embed = payload["embeds"][0]
+
+    assert embed["title"] == "Hello World"
+    assert embed["url"] == "https://example.com/article?ref=rss&id=42"
+    assert embed["fields"][0]["value"] == "A concise summary of what happened."
+    assert embed["footer"]["text"] == "Source: Example News"
+    assert embed["image"]["url"] == "https://example.com/cover.jpg"
+    assert embed["timestamp"] == "2026-04-23T06:00:00+00:00"
+
+
+def test_discord_suppresses_every_mention():
+    """Feed text rides in the embed, where mentions don't notify. The explicit
+    empty parse list keeps an @everyone in a title from ever pinging."""
+    wire = build_payload("discord", _make_message(title="@everyone read this"))
+    payload = json.loads(wire.body)
+    assert payload["allowed_mentions"] == {"parse": []}
+    assert "content" not in payload
+
+
+def test_discord_notification_suppresses_mentions_too():
+    wire = build_notification_payload("discord", "the feed was auto-disabled")
+    payload = json.loads(wire.body)
+    assert payload["content"] == "the feed was auto-disabled"
+    assert payload["allowed_mentions"] == {"parse": []}
+
+
+def test_discord_respects_embed_limits():
+    msg = _make_message(title="x" * 500, summary="y" * 5000)
+    embed = json.loads(build_payload("discord", msg).body)["embeds"][0]
+    assert len(embed["title"]) == 256
+    assert len(embed["fields"][0]["value"]) == 1024
+
+
+def test_discord_omits_non_http_link_and_image():
+    """Discord rejects the whole payload on a malformed embed url, which would
+    cost the article rather than just its link."""
+    msg = _make_message(link="javascript:alert(1)", image_url="data:image/png;base64,AAAA")
+    embed = json.loads(build_payload("discord", msg).body)["embeds"][0]
+    assert "url" not in embed
+    assert "image" not in embed
+    assert embed["title"] == "Hello World"
+
+
+def test_discord_omits_fields_when_summary_empty():
+    msg = _make_message(summary="", summary_translated=None)
+    embed = json.loads(build_payload("discord", msg).body)["embeds"][0]
+    assert "fields" not in embed
+
+
+def test_discord_naive_timestamp_gets_utc_offset():
+    """SQLite hands back naive datetimes even for tz-aware columns; Discord
+    rejects a timestamp with no offset."""
+    msg = _make_message(published_at=datetime(2026, 4, 23, 6, 0))
+    embed = json.loads(build_payload("discord", msg).body)["embeds"][0]
+    assert embed["timestamp"].endswith("+00:00")
+
+
+def test_discord_untitled_placeholder():
+    embed = json.loads(build_payload("discord", _make_message(title="")).body)["embeds"][0]
+    assert embed["title"] == "(untitled)"
+
+
+# ─── matrix ──────────────────────────────────────────────────────────────────
+
+
+def test_matrix_sends_text_and_html():
+    wire = build_payload("matrix", _make_message())
+    payload = json.loads(wire.body)
+
+    # hookshot ignores `html` without a `text` fallback.
+    assert "Hello World" in payload["text"]
+    assert "A concise summary of what happened." in payload["text"]
+    assert 'href="https://example.com/article?ref=rss&amp;id=42"' in payload["html"]
+    assert "<b>" in payload["html"]
+
+
+def test_matrix_escapes_feed_html():
+    """Feed text lands in a formatted body — escaping here rather than trusting
+    the client's tag whitelist."""
+    msg = _make_message(title="<script>alert(1)</script>", summary='" onload="x')
+    payload = json.loads(build_payload("matrix", msg).body)
+    assert "<script>" not in payload["html"]
+    assert "&lt;script&gt;" in payload["html"]
+    assert ' onload="x' not in payload["html"]
+    # The text fallback stays literal — it is never parsed as markup.
+    assert "<script>alert(1)</script>" in payload["text"]
+
+
+def test_matrix_plain_title_when_link_not_http():
+    payload = json.loads(build_payload("matrix", _make_message(link="ftp://x/y")).body)
+    assert "<a href" not in payload["html"]
+    assert "<b>Hello World</b>" in payload["html"]
+
+
+def test_matrix_text_notification_is_simple():
+    wire = build_notification_payload("matrix", "disabled")
+    assert json.loads(wire.body) == {"text": "disabled"}
+
+
 # ─── meta ────────────────────────────────────────────────────────────────────
 
 

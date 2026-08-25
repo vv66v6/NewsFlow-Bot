@@ -17,6 +17,8 @@ import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from email.header import Header
+from html import escape as html_escape
+from typing import Any
 
 from newsflow.adapters.base import Message
 
@@ -206,6 +208,78 @@ def _to_wecom_text(text: str) -> WireRequest:
     return _json({"msgtype": "text", "text": {"content": text}})
 
 
+# ─── discord ─────────────────────────────────────────────────────────────────
+# Channel webhook → embed payload. No bot token, no gateway connection.
+# https://discord.com/developers/docs/resources/webhook#execute-webhook
+
+# discord.Color.blue(), so a webhook destination looks like the bot adapter's own posts.
+_DISCORD_BLUE = 0x3498DB
+
+
+def _to_discord(m: Message) -> WireRequest:
+    ts = m.published_at or datetime.now(UTC)
+    if ts.tzinfo is None:
+        # SQLite returns naive datetimes even for tz-aware columns, and Discord
+        # rejects a timestamp carrying no offset.
+        ts = ts.replace(tzinfo=UTC)
+    embed: dict[str, Any] = {
+        # The title field is not markdown-parsed, so a hostile "](" in feed text
+        # cannot forge a link. Never move the title into `description`.
+        "title": m.display_title[:256] or "(untitled)",
+        "color": _DISCORD_BLUE,
+        "timestamp": ts.isoformat(),
+        "footer": {"text": f"Source: {m.source}"[:2048]},
+    }
+    if _is_http_url(m.link):
+        embed["url"] = m.link
+    summary = m.display_summary
+    if summary:
+        embed["fields"] = [{"name": "Summary", "value": summary[:1024], "inline": False}]
+    if _is_http_url(m.image_url):
+        embed["image"] = {"url": m.image_url}
+    # Feed text rides entirely inside the embed, where mentions never notify. The
+    # explicit empty parse list holds that line if `content` ever carries text.
+    return _json({"embeds": [embed], "allowed_mentions": {"parse": []}})
+
+
+def _to_discord_text(text: str) -> WireRequest:
+    return _json({"content": text[:2000], "allowed_mentions": {"parse": []}})
+
+
+# ─── matrix ──────────────────────────────────────────────────────────────────
+# matrix-hookshot generic webhook: `text`, plus `html` for the formatted body.
+# https://matrix-org.github.io/matrix-hookshot/latest/setup/webhooks.html
+
+
+def _to_matrix(m: Message) -> WireRequest:
+    title = m.display_title or "(untitled)"
+    summary = m.display_summary
+
+    lines = [title]
+    if summary:
+        lines.append(summary)
+    if m.link:
+        lines.append(m.link)
+    lines.append(f"— {m.source}")
+
+    # Feed text reaches Matrix clients as HTML, so every interpolated value is
+    # escaped here instead of trusting the client's tag whitelist.
+    head = html_escape(title)
+    if _is_http_url(m.link):
+        head = f'<a href="{html_escape(m.link)}">{head}</a>'
+    parts = [f"<b>{head}</b>"]
+    if summary:
+        parts.append(f"<br/>{html_escape(summary)}")
+    parts.append(f"<br/><i>{html_escape(m.source)}</i>")
+
+    # `html` alone is ignored — hookshot needs `text` as the fallback body.
+    return _json({"text": "\n".join(lines), "html": "".join(parts)})
+
+
+def _to_matrix_text(text: str) -> WireRequest:
+    return _json({"text": text})
+
+
 # ─── shared helpers ──────────────────────────────────────────────────────────
 
 
@@ -236,6 +310,16 @@ def _rfc2047(s: str) -> str:
     return Header(collapsed, "utf-8").encode(maxlinelen=998)
 
 
+def _is_http_url(value: str | None) -> bool:
+    """Whether `value` may be used as a link target inside a JSON body.
+
+    Scheme check only, matching the native Discord adapter. `_safe_header_url`
+    is stricter because HTTP header values can't carry control or non-latin-1
+    bytes; a JSON body can, and json.dumps escapes them.
+    """
+    return value is not None and value.startswith(("http://", "https://"))
+
+
 def _safe_header_url(value: str | None) -> str | None:
     """Return `value` only if it's a clean http(s) URL safe to place in an HTTP
     header, else None. Unlike the body, header values can't carry arbitrary
@@ -258,6 +342,8 @@ _ENTRY_CONVERTERS = {
     "ntfy": _to_ntfy,
     "lark": _to_lark,
     "wecom": _to_wecom,
+    "discord": _to_discord,
+    "matrix": _to_matrix,
 }
 
 _TEXT_CONVERTERS = {
@@ -266,6 +352,8 @@ _TEXT_CONVERTERS = {
     "ntfy": _to_ntfy_text,
     "lark": _to_lark_text,
     "wecom": _to_wecom_text,
+    "discord": _to_discord_text,
+    "matrix": _to_matrix_text,
 }
 
 SUPPORTED_FORMATS: frozenset[str] = frozenset(_ENTRY_CONVERTERS.keys())
