@@ -1,0 +1,4 @@
+# Store and check out every path as LF. Without this, a checkout under
+# core.autocrlf=true rewrites the whole tree as CRLF, so every file reads as a
+# full rewrite in diffs, and a CR in the Dockerfile fails the image build.
+* text=auto eol=lf
