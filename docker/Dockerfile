@@ -67,6 +67,11 @@ COPY --chown=newsflow:newsflow src/ ./src/
 COPY --chown=newsflow:newsflow alembic/ ./alembic/
 COPY --chown=newsflow:newsflow alembic.ini ./alembic.ini
 
+# LGPL v3 wants the notice to travel with the object it applies to, and what
+# ships is the image, not the repo. The README carries that notice; the LGPL and
+# GPL texts themselves already arrive inside /opt/venv with the library.
+COPY --chown=newsflow:newsflow LICENSE README.md ./
+
 # Create data directory with correct permissions
 RUN mkdir -p /app/data && chown newsflow:newsflow /app/data
 

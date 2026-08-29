@@ -1,258 +1,163 @@
-# NewsFlow Bot
+# NewsFlow-Bot
 
-<div align="center">
+[![license](https://img.shields.io/github/license/Lynthar/NewsFlow-Bot)](LICENSE)
+[![tests](https://img.shields.io/github/actions/workflow/status/Lynthar/NewsFlow-Bot/test.yml?branch=main&label=tests)](https://github.com/Lynthar/NewsFlow-Bot/actions/workflows/test.yml)
+[![image](https://img.shields.io/github/actions/workflow/status/Lynthar/NewsFlow-Bot/docker-publish.yml?branch=main&label=image)](https://github.com/Lynthar/NewsFlow-Bot/actions/workflows/docker-publish.yml)
+[![release](https://img.shields.io/github/v/release/Lynthar/NewsFlow-Bot)](https://github.com/Lynthar/NewsFlow-Bot/releases)
 
-**Self-hosted feed delivery for Discord & Telegram — built-in translation, AI digests, beyond-RSS sources, message templates & mentions**
-
-[![Python](https://img.shields.io/badge/Python-3.11%20–%203.13-blue.svg)](https://python.org)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![discord.py](https://img.shields.io/badge/discord.py-2.3+-7289da.svg)](https://github.com/Rapptz/discord.py)
-[![python-telegram-bot](https://img.shields.io/badge/python--telegram--bot-20.7+-0088cc.svg)](https://python-telegram-bot.org/)
-[![Docker](https://img.shields.io/badge/Docker-ready-2496ed.svg)](https://www.docker.com/)
+Self-hosted feed delivery for Discord, Telegram and webhooks — RSS, JSON APIs and IMAP, with translation and AI digests
 
 English | [简体中文](README.zh-CN.md)
 
-</div>
+This tool takes in RSS, JSON API and IMAP sources at the same time, filters and
+translates them the way you configure, and pushes the result to Discord, Telegram
+or webhooks (maybe more later). My goal was to keep it as simple as possible, so
+it's just one container and one SQLite file.
 
-> 📖 **This is the quick-start.** Full command reference, configuration, advanced deployment, architecture, extension guide — all in **[docs/user-guide.md](docs/user-guide.md)** (currently in Chinese; English translation welcome as a contribution).
->
-> 📋 Upgrading? **[CHANGELOG.md](CHANGELOG.md)** lists what changed, and **[docs/compatibility.md](docs/compatibility.md)** says what the version number promises — the project is still `0.x`, so configuration can still change between minor releases.
+Most administration is done from inside Discord or Telegram with the built-in
+commands. There's no web UI — I don't think it's complex enough to need one — and
+a REST API is there if you'd rather script it.
 
----
-
-## 🎯 What is this?
-
-A **feed-delivery backend you run on your own server**. Hand it a Discord or Telegram bot token, run `/feed add <url>` in a channel, and new articles arrive as they're published — translated into your language, filtered by keyword, laid out with your own message template, and rolled up into AI daily/weekly digests if you want them. Sources aren't limited to RSS: the same pipeline ingests JSON APIs, IMAP newsletters, and inbound webhooks.
-
-**Design principles**: self-hosted first · zero-config start · progressive complexity · swappable components.
-
----
-
-## 🧭 Why NewsFlow?
-
-Most feed bots do one thing: new post → channel. NewsFlow keeps that part boring and reliable, then adds the layer the established bots don't have:
-
-- 🌍 **The feed is in one language, your channel reads another.** Built-in translation (DeepL / OpenAI / Google) with per-feed target languages — and bilingual layouts via message templates.
-- 📰 **It can summarize, not just relay.** Optional AI daily/weekly digests turn a firehose channel into one readable briefing.
-- 🧩 **It ingests more than RSS.** JSON APIs, IMAP newsletters, and inbound webhook pushes flow through the same filter → translate → template → digest pipeline.
-
-|  | NewsFlow | [MonitoRSS](https://github.com/synzen/MonitoRSS) | [RSStT](https://github.com/Rongronggg9/RSS-to-Telegram-Bot) | [flowerss](https://github.com/indes/flowerss-bot) |
-|---|:---:|:---:|:---:|:---:|
-| Built-in translation | ✅ | ❌ | ❌ | ❌ |
-| AI daily / weekly digest | ✅ | ❌ | ❌ | ❌ |
-| Beyond-RSS sources (JSON API / newsletter / webhook-in) | ✅ | ❌ | ❌ | ❌ |
-| Message templates (`{title}` placeholders) | ✅ | ✅ | toggles only | ❌ |
-| Per-feed role / user mentions | ✅ | ✅ | — | — |
-| Platforms in one process | Discord + Telegram + webhook | Discord | Telegram | Telegram |
-| Self-hosted | ✅ | ✅ (hosted option too) | ✅ | ✅ |
-
-<sub>Feature comparison as of 2026-07, from each project's public docs — corrections welcome. All three are solid projects; if classic RSS-to-channel on a single platform is all you need, they serve that well.</sub>
-
----
-
-## ✨ Features
-
-| Feature | Notes |
+| In | Out |
 |---|---|
-| 🌍 **Auto-translation** | DeepL / OpenAI-compatible / Google, per-feed target language, two-tier cache (DB + memory/Redis), same-language short-circuit — no translation API calls wasted |
-| 📰 **AI digest** | Optional LLM daily / weekly briefings per channel, scheduled in your timezone (or `/digest now`) |
-| 🧩 **Non-RSS sources** | Declarative `sources.yaml`: poll any **JSON API** (JSONPath) or **IMAP mailbox / newsletter**, or receive **inbound webhook** pushes — all through the same filter/translate/digest/deliver pipeline |
-| 🎨 **Message templates** | Per-feed `{title}` `{summary}` `{translated_title}` … placeholder layouts — bilingual output, compact mode, your own footer (`/feed template` · `/template`) |
-| 🔔 **Mentions & topics** | Per-feed Discord role/user pings that actually notify (ping-safe baseline — feed content can never `@everyone`); Telegram forum-topic routing (`/feed mention` · `/settopic`) |
-| 📡 **RSS / Atom / JSON Feed** | `feedparser` + `aiohttp`, conditional requests, concurrent fetch, SSRF guard, size cap; paste a site homepage to auto-discover its feed, plus `gh:` / `gnews:` / `yt:` … shortcuts |
-| 🌐 **Multi-platform** | Discord slash commands + Telegram prefix commands in one process |
-| 🔌 **Webhook (outbound)** | Push to Slack / Discord / Matrix / ntfy / Feishu / Work-WeChat / n8n / Zapier / any HTTP endpoint via declarative `webhooks.yaml`; HMAC-SHA256 signing supported. A Discord channel webhook needs no bot token — no invite, no gateway connection |
-| 📥 **Inbound ingest API** | `POST /api/ingest/{source}` (API-key auth) lets n8n / CI / scripts push entries into NewsFlow |
-| 🎯 **Keyword filter** | Per-subscription include/exclude keywords or `/regex/`; filtered entries skip translate |
-| 📋 **OPML import/export** | Migrate from Feedly / Reeder; repo ships a curated 22-feed OPML |
-| 🔁 **Exponential backoff** | Dying sources auto-stretch retries; 10 fails → auto-disable + notify |
-| ⏸ **Pause / resume** | Temporarily stop without deleting the subscription |
-| 🔇 **Silent (digest-only)** | Skip instant push but keep entries flowing into the digest — for channels that only want the rollup |
-| 🩺 **Health visible** | `/feed status` shows errors, backoff window, recent articles; container HEALTHCHECK wired in |
-| 🐳 **Docker ready** | One `docker compose up`; alembic auto-migrates on start |
+| RSS and Atom feeds | Discord bot |
+| JSON APIs, addressed with JSONPath | Telegram bot |
+| IMAP mailboxes, for newsletters that never got a feed | Outbound webhooks in seven wire formats — generic, Slack, ntfy, Lark, WeCom, Discord, Matrix — with optional HMAC-SHA256 signing |
+| An inbound webhook endpoint anything can POST to | |
 
----
+Between the in and the out: keyword and regex filters per subscription,
+translation via DeepL, Google, or any OpenAI-compatible endpoint (including a
+local model), daily and weekly AI digests, per-channel language and display
+settings, OPML import and export, and automatic back-off that disables a feed
+after ten consecutive failures instead of retrying indefinitely. 730 tests, run
+on Python 3.11 and 3.13 in CI.
 
-## 🏗️ Architecture at a glance
+## Install
 
-```
-                 Single asyncio process
-   ┌──────────────────────────────────────────────┐
-   │  Discord / Telegram / Webhook adapter        │
-   │  Dispatch loop   ← fetch→translate→send      │
-   │  Cleanup loop    ← prune old entries         │
-   │  Digest loop     ← AI daily/weekly           │
-   │  Platform monitor ← heartbeat                │
-   └──────────────────────────────────────────────┘
-                      │
-                      ▼
-          SQLite file / Postgres (optional)
-```
-
-Full layered breakdown and module responsibilities in [docs/user-guide.md §10](docs/user-guide.md#十架构总览).
-
----
-
-## 🚀 Quick Start (Docker)
-
-For any Debian/Ubuntu-family server (the script detects the distro — no more copy-pasting repo lines meant for a different one):
+Docker is the deployment method this was designed around. You need one bot token
+to start — either Discord or Telegram; a webhook-only deployment can skip both.
 
 ```bash
-# 1. Install Docker (skip if you already have it; official convenience script)
-curl -fsSL https://get.docker.com | sudo sh
-
-# 2. Clone, configure
 git clone https://github.com/Lynthar/NewsFlow-Bot.git
 cd NewsFlow-Bot
 cp .env.example .env
-chmod 600 .env     # it will hold bot tokens — keep other local users out
-nano .env     # fill in at least one DISCORD_TOKEN or TELEGRAM_TOKEN
+chmod 600 .env
+```
 
-# 3. Run (pulls the prebuilt multi-arch image from GHCR — no local build)
+Put a `DISCORD_TOKEN` or `TELEGRAM_TOKEN` in `.env`, then:
+
+```bash
 docker compose -f docker/docker-compose.yml up -d
 docker compose -f docker/docker-compose.yml logs -f newsflow
 ```
 
-You're live when you see `Discord bot logged in as ...` or `Telegram bot started successfully`.
+That pulls `ghcr.io/lynthar/newsflow-bot`, which ships with every optional extra
+already installed and runs database migrations on startup. Redis and PostgreSQL
+are available as compose profiles if you want them.
 
-> Prefer to build the image yourself instead of pulling? `make docker-up-local` (or set `NEWSFLOW_IMAGE=newsflow-bot:latest` for the `up` command).
-
-**Getting a token**: Discord via [Developer Portal](https://discord.com/developers/applications); Telegram via [@BotFather](https://t.me/BotFather).
-
-> **No privileged intents required.** NewsFlow drives Discord through slash commands only — leave all three Privileged Gateway Intents (Presence, Server Members, Message Content) **off**. Releases before v0.9.1 did request Message Content and crash-looped on startup without it; if you enabled it back then, you can turn it off after upgrading.
-
----
-
-## 📋 Requirements
-
-| Item | Requirement |
-|---|---|
-| OS | Linux (Debian 12 / Ubuntu 22+ / CentOS etc.) |
-| Python | 3.11 / 3.12 / 3.13 (3.14 not yet — `lxml` has no wheel) |
-| Memory | 256 MiB minimum, 512 MiB recommended |
-| Network | Outbound HTTPS 443 (plus 80 if you subscribe to plain-http feeds) |
-| Docker | 20.10+ with Compose v2 (or [systemd deployment](docs/user-guide.md#七高级部署与运维)) |
-
----
-
-## 📱 Command cheat sheet
-
-**Discord**:
-
-```
-/feed add <url>          subscribe (one preview pushed within seconds)
-/feed remove <url>       unsubscribe
-/feed list               show channel subscriptions
-/feed template <url> ... custom message layout ({title}, {url}, …)
-/feed mention <url> ...  ping a role / user on new entries
-/feed filter-set ...     keyword filter
-/digest enable ...       turn on daily / weekly digest
-```
-
-**Telegram**:
-
-```
-/add <url>               subscribe
-/list                    show subscriptions
-/template <url> ...      custom message layout
-/settopic <url>          deliver a feed to the current forum topic
-/filter <url> ...        keyword filter
-/digest enable daily 9   turn on daily digest
-```
-
-Full reference (30+ commands across both platforms): [docs/user-guide.md §1](docs/user-guide.md#一完整命令参考).
-
-**Webhook delivery** is output-only (no bot commands) — under Docker, `cp samples/webhooks.example.yaml config/webhooks.yaml` (the `config/` dir is mounted into the container), edit, and restart; see [docs/user-guide.md §4](docs/user-guide.md#四webhook-推送) or the annotated [`samples/webhooks.example.yaml`](samples/webhooks.example.yaml).
-
-**Non-RSS sources** (JSON API, IMAP newsletters, inbound webhook push) are declared the same way in `config/sources.yaml` — see [docs/user-guide.md §4B](docs/user-guide.md#四b非-rss-信息源sourcesyaml) or [`samples/sources.example.yaml`](samples/sources.example.yaml). Extras are already in the Docker image; for a bare-metal run use `make install-all`.
-
-> Running bare-metal (not Docker)? These files default to `./data/` instead — override with `WEBHOOKS_CONFIG_PATH` / `SOURCES_CONFIG_PATH`.
-
----
-
-## ⚙️ Key configuration
-
-Minimum `.env`:
-
-```bash
-DISCORD_TOKEN=your_real_token
-# or
-TELEGRAM_TOKEN=your_real_token
-```
-
-Common extras:
-
-```bash
-FETCH_INTERVAL_MINUTES=30                # How often to poll feeds
-TRANSLATION_ENABLED=true                 # Turn on auto-translation
-TRANSLATION_PROVIDER=openai              # or deepl / google
-OPENAI_API_KEY=sk-xxx
-OPENAI_BASE_URL=https://api.deepseek.com # Any OpenAI-compatible endpoint
-DIGEST_MODEL=gpt-5.4-mini                # LLM for digest generation
-API_ENABLED=true                         # REST API + inbound /api/ingest
-API_KEY=long-random-string               # required for API writes / inbound push
-```
-
-Full 30+ variables: [docs/user-guide.md §2](docs/user-guide.md#二完整配置项).
-
----
-
-## 🐛 FAQ
-
-<details>
-<summary><b>Subscribed but not receiving messages</b></summary>
-
-Expected. A single preview article is pushed within seconds of subscribing; after that, new content arrives at the `FETCH_INTERVAL_MINUTES` cadence (60 min by default). Source hasn't published anything new → no push. Run `/feed status <url>` to inspect.
-</details>
-
-<details>
-<summary><b>Container keeps restarting, logs show <code>InvalidToken</code></b></summary>
-
-Your `.env` still has the placeholder or a typo. Fix and **`docker compose -f docker/docker-compose.yml up -d newsflow`** — `restart` alone does **not** re-read `.env`; compose only reads env_file at `up` time and caches it into the container config. For any `.env` change you need `up -d` (which will recreate the container when values changed). More on this in [docs/user-guide.md §7.6](docs/user-guide.md#76-部署后在线改配置env-的正确姿势).
-</details>
-
-<details>
-<summary><b>How do I customize the AI digest style / translation tone?</b></summary>
-
-Set `TRANSLATION_SYSTEM_PROMPT=` or `DIGEST_SYSTEM_PROMPT=` in `.env` to override the default prompts. Details: [docs/user-guide.md §3.3](docs/user-guide.md#33-自定义-ai-提示词).
-</details>
-
-More FAQ (DNS / translation not working / data reset / upgrade errors / …): [docs/user-guide.md §15](docs/user-guide.md#十五常见陷阱--faq).
-
----
-
-## 🤝 Contributing
-
-Architecture, layering rules, code style, extension points (adding a new platform / translation provider / API endpoint) are all in **[docs/user-guide.md §8-17](docs/user-guide.md#开发--架构)**.
-
-Fast dev loop:
+Running from source needs Python 3.11 to 3.13 — 3.14 doesn't work yet, `lxml`
+has no wheel for it:
 
 ```bash
 uv venv --python 3.13
 uv pip install -e ".[all]"
-uv pip install pytest pytest-asyncio ruff mypy
-.venv/bin/pytest tests/ -v     # 730 tests   (Windows: .venv\Scripts\pytest)
-.venv/bin/ruff check src/
 ```
 
-> Every `make` target shells out to `poetry run`, so `make test` / `make lint`
-> only work on the Poetry route (`poetry install --all-extras`). On the uv
-> route call the tools directly, as above.
+Before deploying, this checks your `.env` and YAML config without touching the
+network or the database:
 
----
+```bash
+python -m newsflow.checkconfig
+```
 
-## 📄 License
+## Usage
 
-[MIT](LICENSE)
+Subscribe from any channel the bot can see:
 
----
+```
+/feed add https://news.ycombinator.com/rss
+```
 
-<div align="center">
+You get a preview within seconds, then updates on the polling interval.
 
-**Built for the self-hosting community ❤️**
+```
+/feed list                 # what this channel is subscribed to
+/feed status <url>         # errors, back-off window, recent articles
+/feed filter-set <url> …   # keyword or /regex/ filtering
+/digest enable …           # turn on daily or weekly summaries
+```
 
-If it's useful, a ⭐ and share is appreciated.
+Discord has `/feed`, `/settings`, `/status` and `/digest` command groups, all
+requiring Manage Server. Telegram has the same surface as flat commands
+(`/add`, `/remove`, `/filter`, `/digest`, and so on).
 
-[Report a bug](https://github.com/Lynthar/NewsFlow-Bot/issues) · [Feature request](https://github.com/Lynthar/NewsFlow-Bot/issues) · [Pull request](https://github.com/Lynthar/NewsFlow-Bot/pulls)
+## Configuration
 
-</div>
+Environment variables or `.env` for the process, plus two YAML files:
+`webhooks.yaml` declares outbound destinations, `sources.yaml` declares non-RSS
+sources.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DISCORD_TOKEN` / `TELEGRAM_TOKEN` | — | At least one, unless you're webhook-only |
+| `DATABASE_URL` | `sqlite+aiosqlite:///./data/newsflow.db` | Swap in `postgresql+asyncpg://…` for Postgres |
+| `FETCH_INTERVAL_MINUTES` | `60` | Polling interval |
+| `TRANSLATION_ENABLED` / `TRANSLATION_PROVIDER` | `false` / `deepl` | `google`, `deepl` or `openai` |
+| `API_ENABLED` / `API_KEY` | `false` / — | REST API and inbound `/api/ingest` |
+| `OPENAI_BASE_URL` | — | Point translation or digests at a local model |
+
+Editing `.env` needs `up -d` to take effect; `restart` won't re-read it.
+
+## Limitations
+
+- **Matrix works through a webhook, not natively.** There's a `matrix` wire
+  format aimed at matrix-hookshot, but no Matrix adapter and no Matrix-side
+  commands.
+- **Microsoft Teams isn't supported.** The old O365 connector was retired in
+  2026-05, and the replacement path needs a tenant to test against.
+- **Single instance only.** Redis is a translation cache, not a coordination
+  layer; running two copies against one database is out of scope by design.
+- **Webhooks are output only.** They can't manage subscriptions; changing them
+  means editing `webhooks.yaml` and restarting.
+- **Configuration can shift between minor versions** while this is 0.x. What is
+  and isn't inside the compatibility promise is spelled out in the compatibility
+  document.
+
+## Documentation
+
+- [User guide](docs/user-guide.md) — every command, every setting, FAQ. Written
+  in Chinese.
+- [Compatibility](docs/compatibility.md) — what 0.x guarantees and what it
+  doesn't.
+- [Changelog](CHANGELOG.md)
+
+## Security
+
+The `.env` file holds bot tokens and your API key; remember to `chmod 600` it.
+
+The REST API binds to `127.0.0.1` in the shipped compose file. If you set
+`API_ENABLED=true` and move that binding, note that read endpoints are
+unauthenticated unless `API_KEY` is also set — and on a VPS there is no "local
+network" boundary to rely on.
+
+Feed URLs submitted by users are checked against internal address ranges, and
+every redirect hop is re-checked. That isn't a substitute for egress filtering:
+DNS rebinding isn't covered, and hostnames like `localhost` or cloud metadata
+endpoints are deliberately allowed through.
+
+## License
+
+GNU Affero General Public License v3.0 only — see [LICENSE](LICENSE).
+Copyright (c) 2026 Lynthar.
+
+### Third-party licenses
+
+This project uses **[python-telegram-bot](https://python-telegram-bot.org/)**
+under the **LGPL v3** — the library is dual-licensed GPL v3 / LGPL v3 at the
+recipient's option. It is used unmodified, and you may replace it with an
+interface-compatible build of your own.
+
+Both license texts travel with the library itself, in
+`python_telegram_bot-*.dist-info/` (`LICENSE.lesser` for the LGPL, `LICENSE`
+for the GPL) — including inside the `ghcr.io/lynthar/newsflow-bot` image, under
+`/opt/venv`.

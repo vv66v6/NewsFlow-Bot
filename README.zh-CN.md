@@ -1,258 +1,143 @@
-# NewsFlow Bot
+# NewsFlow-Bot
 
-<div align="center">
+[![license](https://img.shields.io/github/license/Lynthar/NewsFlow-Bot)](LICENSE)
+[![tests](https://img.shields.io/github/actions/workflow/status/Lynthar/NewsFlow-Bot/test.yml?branch=main&label=tests)](https://github.com/Lynthar/NewsFlow-Bot/actions/workflows/test.yml)
+[![image](https://img.shields.io/github/actions/workflow/status/Lynthar/NewsFlow-Bot/docker-publish.yml?branch=main&label=image)](https://github.com/Lynthar/NewsFlow-Bot/actions/workflows/docker-publish.yml)
+[![release](https://img.shields.io/github/v/release/Lynthar/NewsFlow-Bot)](https://github.com/Lynthar/NewsFlow-Bot/releases)
 
-**自托管的 Discord / Telegram 信息流推送 —— 内置翻译、AI 日报、非 RSS 源、消息模板与提及**
-
-[![Python](https://img.shields.io/badge/Python-3.11%20–%203.13-blue.svg)](https://python.org)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![discord.py](https://img.shields.io/badge/discord.py-2.3+-7289da.svg)](https://github.com/Rapptz/discord.py)
-[![python-telegram-bot](https://img.shields.io/badge/python--telegram--bot-20.7+-0088cc.svg)](https://python-telegram-bot.org/)
-[![Docker](https://img.shields.io/badge/Docker-ready-2496ed.svg)](https://www.docker.com/)
+自托管信息流投递后端：RSS / JSON API / IMAP 邮件推到 Discord、Telegram 与 webhook，带翻译与 AI 日报
 
 [English](README.md) | 简体中文
 
-</div>
+这个工具可以同时接收 RSS、JSON API 或 IMAP 形式的信息源，按照用户设定的方式过滤、
+翻译，再推到 Discord、Telegram 或 webhook（也许以后会接别的），我的目标是尽量简单，
+所以它只是一个容器加一个 SQLite 文件。
 
-> 📖 **本文是快速上手指引**。完整的命令、配置、高级部署、设计决策、扩展开发等细节见 **[docs/user-guide.md](docs/user-guide.md)**。
->
-> 📋 准备升级？**[CHANGELOG.md](CHANGELOG.md)** 列出每版改了什么，**[docs/compatibility.md](docs/compatibility.md)** 说明版本号承诺了什么——项目仍是 `0.x`，配置面在小版本之间仍可能变动。
+大部分管理操作都可以在 Discord 或 Telegram 里用预设命令完成，没有 Web 界面，我觉得
+它没复杂到需要 Web 界面，想脚本化可以用 REST API。
 
----
-
-## 🎯 它是什么
-
-部署在你自己服务器上的**信息流推送后端**。给它一个 Discord 或 Telegram bot token，在频道里 `/feed add <url>`，新文章发布即送达——自动翻译成你的语言、按关键词过滤、用你自己的模板排版，还可以按日/周聚合成 AI 简报。信息源不止 RSS：JSON API、IMAP newsletter、入站 webhook 走的是同一条管道。
-
-**设计原则**：自托管优先、零配置启动、渐进式复杂度、组件可替换。
-
----
-
-## 🧭 为什么选 NewsFlow？
-
-多数 feed bot 只做一件事：有新文章 → 发到频道。NewsFlow 把这部分做得足够无聊可靠，然后叠上一层老牌 bot 们没有的能力：
-
-- 🌍 **源是一种语言，频道读另一种。** 内置翻译（DeepL / OpenAI / Google），按 feed 设目标语言——配合消息模板还能做双语排版。
-- 📰 **不只转发，还会总结。** 可选的 AI 日报/周报，把刷屏频道压缩成一份能读完的简报。
-- 🧩 **吃得下 RSS 之外的源。** JSON API、IMAP newsletter、入站 webhook 推送，全部走同一条 过滤 → 翻译 → 模板 → 日报 管道。
-
-|  | NewsFlow | [MonitoRSS](https://github.com/synzen/MonitoRSS) | [RSStT](https://github.com/Rongronggg9/RSS-to-Telegram-Bot) | [flowerss](https://github.com/indes/flowerss-bot) |
-|---|:---:|:---:|:---:|:---:|
-| 内置翻译 | ✅ | ❌ | ❌ | ❌ |
-| AI 日报 / 周报 | ✅ | ❌ | ❌ | ❌ |
-| 非 RSS 源（JSON API / newsletter / 入站 webhook） | ✅ | ❌ | ❌ | ❌ |
-| 消息模板（`{title}` 占位符） | ✅ | ✅ | 仅开关式 | ❌ |
-| 按 feed @角色 / @用户 | ✅ | ✅ | — | — |
-| 单进程多平台 | Discord + Telegram + webhook | Discord | Telegram | Telegram |
-| 自托管 | ✅ | ✅（另有托管服务） | ✅ | ✅ |
-
-<sub>功能对比基于各项目公开文档，截至 2026-07，欢迎指正。三者都是很好的项目——如果你只需要单平台的经典 RSS 转发，它们同样称职。</sub>
-
----
-
-## ✨ 功能概览
-
-| 功能 | 说明 |
+| 进 | 出 |
 |---|---|
-| 🌍 **自动翻译** | DeepL / OpenAI 兼容端点 / Google，按 feed 设目标语言，两层缓存（DB + 内存/Redis），同语言自动短路——不浪费翻译 API |
-| 📰 **AI 日报 / 周报** | 可选 LLM 摘要，按频道排程且支持时区（也可 `/digest now` 立即生成） |
-| 🧩 **非 RSS 源** | 声明式 `sources.yaml`：轮询任意 **JSON API**（JSONPath）或 **IMAP 邮箱 / newsletter**，或接收 **入站 webhook** 推送——都走同一套过滤/翻译/日报/投递链 |
-| 🎨 **消息模板** | 按 feed 自定义 `{title}` `{summary}` `{translated_title}` … 占位符排版——双语输出、紧凑模式、自定义落款（`/feed template` · `/template`） |
-| 🔔 **提及与话题** | Discord 按 feed @角色/@用户、真响铃（默认 ping 安全基线——feed 内容永远 @ 不到人）；Telegram 论坛话题定向投递（`/feed mention` · `/settopic`） |
-| 📡 **RSS / Atom / JSON Feed** | `feedparser` + `aiohttp`，条件请求 / 并发 / SSRF 校验 / 大小上限；粘网站首页自动发现 feed，另有 `gh:` / `gnews:` / `yt:` … 简写 |
-| 🌐 **双平台推送** | Discord 斜杠命令 + Telegram 前缀命令并发工作 |
-| 🔌 **Webhook（出站）** | 声明式 `webhooks.yaml` 推送到 Slack / Discord / Matrix / ntfy / 飞书 / 企业微信 / n8n / Zapier / 任意 HTTP 端点；支持 HMAC-SHA256 签名。走 Discord 频道 webhook 不需要 bot token——不用邀请进服务器，也没有常驻连接 |
-| 📥 **入站 ingest API** | `POST /api/ingest/{source}`（API key 鉴权）让 n8n / CI / 脚本把条目推进 NewsFlow |
-| 🎯 **关键词过滤** | 单订阅 include/exclude 关键词或 `/正则/`，被过滤条目不消耗翻译 API |
-| 📋 **OPML 导入导出** | 从 Feedly / Reeder 搬家；仓库带 22 源预置清单 |
-| 🔁 **指数退避** | 源失效自动拉长重试；10 次连续失败自动停订并通知 |
-| ⏸ **暂停 / 恢复** | 临时不收推送又不删订阅 |
-| 🔇 **静默（仅日报）** | 跳过即时推送但条目仍喂给日报——给只想看汇总的频道 |
-| 🩺 **健康可视** | `/feed status` 查健康、错误、最近文章；容器 HEALTHCHECK 集成 |
-| 🐳 **Docker 就绪** | 一条 compose 启动；alembic 自动迁移 |
+| RSS / Atom 订阅源 | Discord bot |
+| 用 JSONPath 取值的 JSON API | Telegram bot |
+| IMAP 信箱，给那些从来没做过订阅源的 newsletter | 七种格式的出站 webhook——generic、Slack、ntfy、飞书、企业微信、Discord、Matrix，可选 HMAC-SHA256 签名 |
+| 任何东西都能 POST 的入站 webhook 端点 | |
 
----
+进和出之间做的事：每条订阅可以配关键词与正则过滤；翻译可以用 DeepL、Google 或任何
+OpenAI 兼容端点（本地模型也行）；日报与周报由 AI 生成；语言与显示样式按频道分别设置；
+支持 OPML 导入导出；一个源连续失败十次会自动停掉，不再继续重试。730 个测试，CI 在
+Python 3.11 与 3.13 上跑。
 
-## 🏗️ 架构
+## 安装
 
-```
-                 单 asyncio 进程
-   ┌──────────────────────────────────────────────┐
-   │  Discord / Telegram / Webhook adapter        │
-   │  Dispatch loop   ← 抓取→翻译→推送              │
-   │  Cleanup loop    ← 清过期条目                  │
-   │  Digest loop     ← AI 日报/周报                │
-   │  Platform monitor ← heartbeat                │
-   └──────────────────────────────────────────────┘
-                      │
-                      ▼
-          SQLite 文件 / Postgres (可选)
-```
-
-详细分层、各模块职责、设计决策见 [docs/user-guide.md 第 10 章](docs/user-guide.md#十架构总览)。
-
----
-
-## 🚀 快速开始（Docker）
-
-Debian/Ubuntu 系服务器通用（官方脚本自动识别发行版，不用再抄错别家的仓库行）：
+Docker 是设计时预设的部署方式。至少要有一个 bot token——Discord 或 Telegram 都行；纯
+webhook 部署两个都可以不填。
 
 ```bash
-# 1. 安装 Docker（如未装；Docker 官方一键脚本）
-curl -fsSL https://get.docker.com | sudo sh
-
-# 2. 拉代码、填 token
 git clone https://github.com/Lynthar/NewsFlow-Bot.git
 cd NewsFlow-Bot
 cp .env.example .env
-chmod 600 .env     # 里面会放 bot token，别让同机其他用户读到
-nano .env     # 至少填一个 DISCORD_TOKEN 或 TELEGRAM_TOKEN
+chmod 600 .env
+```
 
-# 3. 启动（直接拉 GHCR 预构建多架构镜像，无需本地编译）
+在 `.env` 里填上 `DISCORD_TOKEN` 或 `TELEGRAM_TOKEN`，然后：
+
+```bash
 docker compose -f docker/docker-compose.yml up -d
 docker compose -f docker/docker-compose.yml logs -f newsflow
 ```
 
-看到 `Discord bot logged in as ...` 或 `Telegram bot started successfully` 就跑起来了。
+这会拉取 `ghcr.io/lynthar/newsflow-bot`，镜像里所有可选组件都装好了，启动时自动执行
+数据库迁移。想用 Redis 或 PostgreSQL 的话，compose 里有对应的 profile。
 
-> 想自己构建镜像而不是拉预构建的？用 `make docker-up-local`（或给 `up` 命令设 `NEWSFLOW_IMAGE=newsflow-bot:latest`）。
-
-**获取 token**：Discord 看 [Developer Portal](https://discord.com/developers/applications)；Telegram 找 [@BotFather](https://t.me/BotFather)。详细步骤见 [docs/user-guide.md](docs/user-guide.md#一完整命令参考)。
-
-> **不需要任何特权 intent**。NewsFlow 只靠斜杠命令与 Discord 交互，Developer Portal → Bot → Privileged Gateway Intents 三个开关（Presence / Server Members / Message Content）**全部保持关闭**即可。v0.9.1 之前的版本会申请 Message Content，没开就启动崩溃循环；当年开过的话，升级后可以关掉。
-
----
-
-## 📋 环境要求
-
-| 项 | 要求 |
-|---|---|
-| OS | Linux（Debian 12 / Ubuntu 22+ / CentOS 等） |
-| Python | 3.11 / 3.12 / 3.13（3.14 暂不支持，`lxml` 无 wheel） |
-| 内存 | 最低 256 MiB，推荐 512 MiB |
-| 网络 | 出站 HTTPS 443（订阅 http:// 源的话还需 80） |
-| Docker | 20.10+ + Compose v2（或用 [systemd 部署](docs/user-guide.md#七高级部署与运维)） |
-
----
-
-## 📱 核心命令速查
-
-**Discord**：
-
-```
-/feed add <url>          订阅（几秒内推一条预览）
-/feed remove <url>       退订
-/feed list               看当前订阅
-/feed template <url> ... 自定义消息排版（{title}、{url}…）
-/feed mention <url> ...  新文章 @角色/@用户
-/feed filter-set ...     关键词过滤
-/digest enable ...       开日报/周报
-```
-
-**Telegram**：
-
-```
-/add <url>               订阅
-/list                    看当前订阅
-/template <url> ...      自定义消息排版
-/settopic <url>          把 feed 指到当前论坛话题
-/filter <url> ...        关键词过滤
-/digest enable daily 9   开日报
-```
-
-**完整命令参考**（30+ 个）：[docs/user-guide.md 第 1 章](docs/user-guide.md#一完整命令参考)。
-
-**Webhook 推送**是纯出口（没有 bot 命令）——Docker 部署下 `cp samples/webhooks.example.yaml config/webhooks.yaml`（`config/` 目录已挂载进容器），编辑后重启即可。详见 [docs/user-guide.md 第 4 章](docs/user-guide.md#四webhook-推送) 或带注释的 [`samples/webhooks.example.yaml`](samples/webhooks.example.yaml)。
-
-**非 RSS 源**（JSON API、IMAP newsletter、入站 webhook 推送）同样在 `config/sources.yaml` 声明——详见 [docs/user-guide.md 第 4B 章](docs/user-guide.md#四b非-rss-信息源sourcesyaml) 或 [`samples/sources.example.yaml`](samples/sources.example.yaml)。相关 extra 已打进 Docker 镜像；裸机运行才需 `make install-all`。
-
-> 裸机运行（非 Docker）？这两个文件默认在 `./data/` 下——用 `WEBHOOKS_CONFIG_PATH` / `SOURCES_CONFIG_PATH` 改路径。
-
----
-
-## ⚙️ 关键配置
-
-最小 `.env`：
-
-```bash
-DISCORD_TOKEN=your_real_token
-# 或
-TELEGRAM_TOKEN=your_real_token
-```
-
-常见额外配置：
-
-```bash
-FETCH_INTERVAL_MINUTES=30                # 抓取间隔
-TRANSLATION_ENABLED=true                 # 开翻译
-TRANSLATION_PROVIDER=openai              # 或 deepl / google
-OPENAI_API_KEY=sk-xxx
-OPENAI_BASE_URL=https://api.deepseek.com # OpenAI 兼容端点（可选）
-DIGEST_MODEL=gpt-5.4-mini                # 日报用的模型
-API_ENABLED=true                         # REST API + 入站 /api/ingest
-API_KEY=一串足够长的随机字符串            # API 写操作 / 入站推送所需
-```
-
-**完整 30+ 配置项**：[docs/user-guide.md 第 2 章](docs/user-guide.md#二完整配置项)。
-
----
-
-## 🐛 常见问题
-
-<details>
-<summary><b>订阅了但没收到消息</b></summary>
-
-正常。新订阅成功后几秒会推一条最新文章预览；之后按 `FETCH_INTERVAL_MINUTES`（默认 60min）周期抓。源没新文章就没推送。用 `/feed status <url>` 看详情。
-</details>
-
-<details>
-<summary><b>容器无限重启，日志 <code>InvalidToken</code></b></summary>
-
-`.env` 里的 token 还是占位符或者输错了。改后用 **`docker compose -f docker/docker-compose.yml up -d newsflow`**——光 `restart` 是**不够**的：compose 只在 `up` 时读一次 `env_file` 并把结果缓存进容器配置，`restart` 用的是那份旧缓存。改 `.env` 后必须 `up -d`（compose 发现值变了会 recreate 容器）。详见 [docs/user-guide.md §7.6](docs/user-guide.md#76-部署后在线改配置env-的正确姿势)。
-</details>
-
-<details>
-<summary><b>想自定义 AI 日报的风格 / 翻译的口吻</b></summary>
-
-`.env` 里设 `TRANSLATION_SYSTEM_PROMPT=` 或 `DIGEST_SYSTEM_PROMPT=` 覆盖默认。详见 [docs/user-guide.md §3.3](docs/user-guide.md#33-自定义-ai-提示词)。
-</details>
-
-**更多 FAQ**（DNS / 翻译没生效 / 数据重置 / 升级报错 等）：[docs/user-guide.md 第 15 章](docs/user-guide.md#十五常见陷阱--faq)。
-
----
-
-## 🤝 贡献 / 二次开发
-
-架构设计、代码风格、扩展点（加新平台 / 新翻译 provider / 新 API 端点）都在 **[docs/user-guide.md 第 8-17 章](docs/user-guide.md#开发--架构)**。
-
-快速开发循环：
+从源码运行需要 Python 3.11 到 3.13。3.14 暂时不行，`lxml` 还没有对应的 wheel：
 
 ```bash
 uv venv --python 3.13
 uv pip install -e ".[all]"
-uv pip install pytest pytest-asyncio ruff mypy
-.venv/bin/pytest tests/ -v     # 730 个测试   (Windows: .venv\Scripts\pytest)
-.venv/bin/ruff check src/
 ```
 
-> `make` 的每个 target 都是 `poetry run ...`，所以 `make test` / `make lint`
-> 只在 Poetry 路线（`poetry install --all-extras`）下可用。走 uv 路线请像上面
-> 这样直接调工具。
+部署前可以先跑一次离线自检，不访问网络，也不访问数据库：
 
----
+```bash
+python -m newsflow.checkconfig
+```
 
-## 📄 许可证
+## 用法
 
-[MIT](LICENSE)
+在任何 bot 能看见的频道里订阅：
 
----
+```
+/feed add https://news.ycombinator.com/rss
+```
 
-<div align="center">
+几秒内会推一条预览，之后按轮询间隔更新。
 
-**为自托管社区而生 ❤️**
+```
+/feed list                 # 这个频道订阅了什么
+/feed status <url>         # 报错、退避窗口、最近的文章
+/feed filter-set <url> …   # 关键词或 /正则/ 过滤
+/digest enable …           # 打开日报或周报
+```
 
-觉得有用欢迎 ⭐ 和分享
+Discord 侧是 `/feed`、`/settings`、`/status`、`/digest` 四个命令组，都要求「管理服务器」
+权限。Telegram 侧是同样的能力，写成平铺命令（`/add`、`/remove`、`/filter`、`/digest`
+这些）。
 
-[报告 bug](https://github.com/Lynthar/NewsFlow-Bot/issues) · [功能建议](https://github.com/Lynthar/NewsFlow-Bot/issues) · [Pull Request](https://github.com/Lynthar/NewsFlow-Bot/pulls)
+## 配置
 
-</div>
+进程本身读环境变量或 `.env`，另有两个 YAML：`webhooks.yaml` 声明出站目标，
+`sources.yaml` 声明非 RSS 的源。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `DISCORD_TOKEN` / `TELEGRAM_TOKEN` | 无 | 至少填一个，除非你只用 webhook |
+| `DATABASE_URL` | `sqlite+aiosqlite:///./data/newsflow.db` | 换成 `postgresql+asyncpg://…` 即上 Postgres |
+| `FETCH_INTERVAL_MINUTES` | `60` | 轮询间隔 |
+| `TRANSLATION_ENABLED` / `TRANSLATION_PROVIDER` | `false` / `deepl` | 三选一：`google`、`deepl`、`openai` |
+| `API_ENABLED` / `API_KEY` | `false` / 无 | REST API 与入站 `/api/ingest` |
+| `OPENAI_BASE_URL` | 无 | 把翻译或日报指向本地模型 |
+
+改完 `.env` 要 `up -d` 才生效，`restart` 不会重新读。
+
+## 能力边界
+
+- **Matrix 是走 webhook 的，不是原生支持。** 有一个面向 matrix-hookshot 的 `matrix`
+  格式，但没有 Matrix 适配器，也没有 Matrix 侧的命令。
+- **不支持 Microsoft Teams。** 老的 O365 connector 已于 2026-05 停用，新路径需要一个
+  M365 租户才能验。
+- **只支持单实例。** Redis 只是翻译缓存，不是协调层；两个副本连同一个数据库不在设计范围内。
+- **webhook 只是出口**，不能用来管理订阅；要改就得改 `webhooks.yaml` 再重启。
+- **0.x 期间配置面会在小版本之间变**，哪些在兼容性承诺范围内、哪些不在，兼容性文档里
+  写清楚了。
+
+## 文档
+
+- [用户指南](docs/user-guide.md) —— 每条命令、每个设置、常见问题。
+- [兼容性说明](docs/compatibility.md) —— 0.x 保证什么、不保证什么。
+- [变更日志](CHANGELOG.md)
+
+## 安全
+
+`.env` 里存着 bot token 和 API key，记得 `chmod 600`。
+
+自带的 compose 把 REST API 绑在 `127.0.0.1`。如果你打开 `API_ENABLED=true` 又改了绑定
+地址，注意：不设 `API_KEY` 时读端点是不需要鉴权的，而 VPS 上并没有一层可以依赖的
+「局域网」。
+
+用户提交的订阅源 URL 会对内网地址段做校验，重定向每一跳都重新校验。这不能替代出口
+限制：DNS rebinding 挡不住，而 `localhost`、云厂商 metadata 这类主机名是**有意放行**的。
+
+## 许可证
+
+GNU Affero 通用公共许可证 v3.0 only —— 见 [LICENSE](LICENSE)。Copyright (c) 2026 Lynthar。
+
+### 第三方许可证
+
+本项目按 **LGPL v3** 使用 **[python-telegram-bot](https://python-telegram-bot.org/)**
+——该库是 GPL v3 / LGPL v3 双许可、由接收方选择。本项目未修改它，你可以把它换成
+自己构建的、接口兼容的版本。
+
+两份许可证正文随该库一起分发，在 `python_telegram_bot-*.dist-info/` 里
+（`LICENSE.lesser` 是 LGPL、`LICENSE` 是 GPL），`ghcr.io/lynthar/newsflow-bot`
+镜像的 `/opt/venv` 下同样有。
