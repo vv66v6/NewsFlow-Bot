@@ -11,6 +11,10 @@ on:
   push:
     branches: [main]
     tags: ["v*.*.*"]
+    # README.md is not ignored here: the Dockerfile COPYs it into the image,
+    # so skipping the build would publish an image with a stale README.
+    paths-ignore:
+      - 'docs/**'
   workflow_dispatch:
 
 # Don't run overlapping builds for the same ref.
