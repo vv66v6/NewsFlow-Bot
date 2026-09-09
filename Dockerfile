@@ -25,7 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/venv /opt/venv
-COPY src/ ./src/
+# Do NOT copy src/ into /app at runtime. Bothost mounts /app and can mask
+# the source tree; the installed package in /opt/venv must be authoritative.
 
 # Install free local translation models. These are stored outside /app so
 # Bothost's persistent /app mount does not hide them.
@@ -37,7 +38,7 @@ COPY alembic.ini ./alembic.ini
 COPY LICENSE README.md ./
 
 ENV PATH="/opt/venv/bin:$PATH"
-ENV PYTHONPATH=/app/src
+# Intentionally no PYTHONPATH=/app/src: use the installed package from /opt/venv.
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV DATABASE_URL=sqlite+aiosqlite:///./data/newsflow.db
