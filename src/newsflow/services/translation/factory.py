@@ -31,6 +31,17 @@ def create_translation_provider() -> TranslationProvider | None:
 
     provider = settings.translation_provider
 
+    if provider == "argos":
+        from newsflow.services.translation.argos import ArgosProvider
+
+        logger.info(
+            "Using local Argos translation provider "
+            f"(default source: {settings.argos_source_language})"
+        )
+        return ArgosProvider(
+            default_source_language=settings.argos_source_language,
+        )
+
     if provider == "deepl" and settings.deepl_api_key:
         from newsflow.services.translation.deepl import DeepLProvider
 

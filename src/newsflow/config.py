@@ -40,7 +40,7 @@ class Settings(BaseSettings):
 
     # Translation (disabled by default)
     translation_enabled: bool = False
-    translation_provider: Literal["google", "deepl", "openai"] = "deepl"
+    translation_provider: Literal["google", "deepl", "openai", "argos"] = "deepl"
     google_credentials_path: str | None = None
     google_project_id: str | None = None
     deepl_api_key: str | None = None
@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     # Override the built-in OpenAI translation system prompt. Supports
     # {source_desc} and {target_name} placeholders. None → use default.
     translation_system_prompt: str | None = None
+    # Local Argos Translate source language. NewsFlow does not provide a source
+    # language to providers for most RSS entries, so English is the safe default
+    # for crypto news feeds; override if your feeds are in another language.
+    argos_source_language: str = "en"
 
     # Scheduling
     fetch_interval_minutes: int = 60
@@ -280,12 +284,17 @@ class Settings(BaseSettings):
             return self.deepl_api_key
         elif self.translation_provider == "openai":
             return self.openai_api_key
+        elif self.translation_provider == "argos":
+            # Argos runs locally and does not require an API key.
+            return "local"
         return None
 
     def can_translate(self) -> bool:
         """Check if translation is properly configured."""
         if not self.translation_enabled:
             return False
+        if self.translation_provider == "argos":
+            return True
         return bool(self.get_translation_api_key())
 
 
