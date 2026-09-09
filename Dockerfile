@@ -26,6 +26,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /opt/venv /opt/venv
 COPY src/ ./src/
+
+# Install free local translation models. These are stored outside /app so
+# Bothost's persistent /app mount does not hide them.
+RUN /opt/venv/bin/argospm update \
+    && /opt/venv/bin/argospm install translate-en_de \
+    && /opt/venv/bin/argospm install translate-en_fr
 COPY alembic/ ./alembic/
 COPY alembic.ini ./alembic.ini
 COPY LICENSE README.md ./
