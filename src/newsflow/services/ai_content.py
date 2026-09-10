@@ -20,20 +20,25 @@ Rewrite the supplied source article into a short, native-sounding Telegram news 
 Do NOT translate word-for-word. Write as a native editor in the requested language.
 
 Required output, exactly:
-TITLE: <one concise headline>
+TITLE: <concise headline, optionally starting with one relevant emoji>
 BODY:
-<1 to 3 short paragraphs>
+<2 to 4 substantive paragraphs>
 
 Rules:
-- Report facts only from the source. Never invent facts, numbers, quotes or causes.
-- Preserve important numbers, percentages, token names, company names and dates.
-- Keep the post concise and mobile-friendly, normally 500-900 characters in the body.
-- The headline should state the main event and may use one relevant emoji at the start.
-- Do not use markdown headings, bullet lists, hashtags, "Source", URLs, or calls to action.
+- The requested target language is absolute: write BOTH TITLE and BODY entirely in that language.
+- Report facts only from the supplied source. Never invent facts, numbers, quotes, causes, background or implications.
+- Preserve important numbers, percentages, token names, company names, dates and named institutions.
+- Use the source article, not only its headline. Extract the key details that make the news useful.
+- Prefer 2 to 4 paragraphs and normally 700-1400 characters in the BODY when the source contains enough information.
+- Each paragraph should add a distinct fact or piece of context; do not repeat the headline.
+- If the source is genuinely brief, stay factual rather than padding with generic commentary.
+- The headline should state the main event clearly and naturally.
+- Do not use markdown headings, bullet lists, hashtags, "Source", "Sources", URLs, or calls to action.
 - Do not mention that you are an AI or that this is a rewrite.
 - Avoid generic openings such as "According to reports" unless attribution itself is important.
 - Avoid hype and price predictions unless explicitly present in the source.
-- Use natural crypto-industry terminology.
+- Use natural terminology used by professional crypto/financial journalists in the target language.
+- Do not translate proper names, company names, exchange names or tickers unless there is a standard localized form.
 - The BODY must contain only the finished post copy.
 """
 

@@ -229,13 +229,18 @@ class Dispatcher:
                 # Channels already found gone this cycle. The bulk UPDATE does not sync
                 # identity-mapped instances, so the re-fetch still sees is_active=True.
                 dead_channels: set[tuple[str, str]] = set()
+                # A channel is a publication destination, not a feed. Even if a
+                # channel subscribes to several feeds, deliver at most one article
+                # per dispatch cycle to keep the 60–120 minute cadence predictable.
+                published_channels: set[tuple[str, str]] = set()
                 for sub_id in sub_ids:
                     sub = await sub_repo.get_subscription_by_id(sub_id)
                     if sub is None or not sub.is_active:
                         # Deleted or deactivated since the snapshot (only
                         # visible here after a rollback refreshed the row).
                         continue
-                    if (sub.platform, sub.platform_channel_id) in dead_channels:
+                    channel_key = (sub.platform, sub.platform_channel_id)
+                    if channel_key in dead_channels or channel_key in published_channels:
                         continue
                     sent = await self._dispatch_to_subscription(
                         session,
@@ -244,6 +249,8 @@ class Dispatcher:
                         dead_channels=dead_channels,
                     )
                     result.messages_sent += sent
+                    if sent:
+                        published_channels.add(channel_key)
                     # Commit after each subscription, never once per round: messages went out when
                     # the adapter returned, so a late failure would roll back the whole round's
                     # sent-marks and re-push everything. expire_on_commit=False keeps objects usable.
@@ -557,6 +564,8 @@ class Dispatcher:
         entry: FeedEntry,
         subscription: Subscription,
         session: AsyncSession,
+        *,
+        force_default_template: bool = False,
     ) -> Message:
         """Create an AVEX-ready message, optionally using AI editorial rewriting."""
         target_language_raw = subscription.target_language
@@ -564,9 +573,11 @@ class Dispatcher:
         lang = "zh" if target_language.startswith("zh") else "en"
         source = get_source_name(entry.link, lang)
 
+        # Give the editorial model the fullest available article text. The normal
+        # Telegram renderer still enforces its own message-size limit later.
         raw_body = entry.content or entry.summary or ""
         plain_summary, _images = clean_html(raw_body)
-        plain_summary = truncate_text(plain_summary, MAX_SUMMARY_LENGTH)
+        plain_summary = plain_summary.strip()[:7000]
         plain_summary = dedup_summary(entry.title, plain_summary)
 
         title_translated: str | None = None
@@ -603,7 +614,7 @@ class Dispatcher:
         footer = self._channel_footer(target_language)
 
         template_text: str | None = None
-        if subscription.message_template:
+        if subscription.message_template and not force_default_template:
             pretrim = Message(
                 title=entry.title,
                 summary=plain_summary,
@@ -767,6 +778,59 @@ class Dispatcher:
                     )
         except Exception:
             logger.exception(f"notify_feed_deactivated({feed_id}) failed")
+
+    async def avex_test(self, channel_id: str, language: str | None = None) -> tuple[bool, str]:
+        """Send the newest stored article to an AVEX channel without marking it sent.
+
+        This is an explicit smoke-test path: it uses the real AVEX editorial pipeline,
+        including the channel footer and optional image handling, but does not consume
+        the article from the normal delivery queue.
+        """
+        adapter = self._adapters.get("telegram")
+        if adapter is None:
+            return False, "Telegram adapter is not ready."
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            sub_repo = SubscriptionRepository(session)
+            subscriptions = await sub_repo.get_all_active_subscriptions()
+            candidates = [
+                sub
+                for sub in subscriptions
+                if sub.platform == "telegram" and sub.platform_channel_id == str(channel_id)
+            ]
+            if not candidates:
+                return False, "No active feed subscription exists for this channel."
+
+            feed_repo = FeedRepository(session)
+            newest: FeedEntry | None = None
+            chosen_sub: Subscription | None = None
+            for sub in candidates:
+                entries = await feed_repo.get_recent_entries(sub.feed_id, limit=10)
+                for entry in entries:
+                    if newest is None:
+                        newest, chosen_sub = entry, sub
+                        continue
+                    current_key = entry.published_at or datetime.min.replace(tzinfo=UTC)
+                    newest_key = newest.published_at or datetime.min.replace(tzinfo=UTC)
+                    if current_key > newest_key:
+                        newest, chosen_sub = entry, sub
+
+            if newest is None or chosen_sub is None:
+                return False, "No stored article is available for this channel."
+
+            # Keep the stored subscription settings intact, but force the test through
+            # the default AVEX layout so an old custom template cannot hide the fix.
+            if language:
+                chosen_sub.target_language = language
+                chosen_sub.translate = True
+            message = await self._create_message(
+                newest, chosen_sub, session, force_default_template=True
+            )
+            sent = await adapter.send_message(str(channel_id), message)
+            if sent:
+                return True, f"Test post sent from entry {newest.id}."
+            return False, "Telegram did not confirm the test post."
 
     async def schedule_preview(self, subscription_id: int) -> None:
         """Fire-and-forget wrapper for dispatch_subscription, safe to use

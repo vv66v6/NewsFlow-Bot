@@ -225,6 +225,8 @@ WELCOME_TEXT = (
     "/digest enable weekly &lt;weekday&gt; &lt;hour&gt; [lang] [tz] — Weekly digest\n"
     "/digest disable — Turn off\n"
     "/digest now — Generate and send one immediately\n\n"
+    "<b>AVEX:</b>\n"
+    "/avex_test [@channel] [en|fr|de] — Send the newest stored article through the AVEX pipeline\n\n"
     "<b>Other:</b>\n"
     "/status — Bot status\n"
     "/help — This message\n\n"
@@ -251,6 +253,7 @@ _MENU_COMMANDS: list[tuple[str, str]] = [
     ("template", "Custom message layout for a feed"),
     ("settopic", "Deliver a feed to the current topic"),
     ("digest", "Configure the AI daily/weekly digest"),
+    ("avex_test", "Send an AVEX test post"),
     ("status", "Show bot status"),
     ("help", "Show the full command list"),
 ]
@@ -358,6 +361,80 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
     await processing_msg.edit_text(message, parse_mode="HTML")
+
+
+async def avex_test_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send a real stored article through the AVEX pipeline without consuming it."""
+    msg = update.message
+    chat = update.effective_chat
+    user = update.effective_user
+    if msg is None or chat is None or user is None:
+        return
+    if not await _require_group_admin(update, context):
+        return
+
+    args = list(context.args)
+    channel_ref: str | None = None
+    language: str | None = None
+    for arg in args:
+        value = arg.strip().lower()
+        if value in {"en", "fr", "de"}:
+            language = value
+        elif not channel_ref:
+            channel_ref = arg
+
+    if channel_ref is None and chat.type == ChatType.CHANNEL:
+        channel_ref = str(chat.id)
+    elif channel_ref is None:
+        await msg.reply_text(
+            "Usage: /avex_test @avex_exchange [en|fr|de]\n"
+            "/avex_test @avexmarkets [en|fr|de]\n"
+            "/avex_test @avex_news [en|fr|de]"
+        )
+        return
+
+    # Resolve @username to the numeric Telegram channel id. Reuse the same access
+    # checks as the other channel-management commands.
+    if channel_ref.startswith("@"): 
+        try:
+            target = await context.bot.get_chat(channel_ref)
+        except Exception:
+            await msg.reply_text(f"⚠️ Can't access {channel_ref}.")
+            return
+        if target.type != ChatType.CHANNEL:
+            await msg.reply_text(f"⚠️ {channel_ref} is not a channel.")
+            return
+        channel_id = str(target.id)
+        if str(user.id) not in get_settings().admin_user_ids:
+            try:
+                allowed = await _cached_is_admin(context.bot, target.id, user.id)
+            except Exception:
+                logger.exception("Failed to verify channel admin for /avex_test")
+                await msg.reply_text("⚠️ Couldn't verify your admin status in that channel.")
+                return
+            if not allowed:
+                await msg.reply_text("⛔ Only that channel's admins can run /avex_test.")
+                return
+    else:
+        channel_id = channel_ref
+
+    # For the three public AVEX channels, make the intended language explicit when
+    # the caller did not provide one. This prevents an old subscription setting from
+    # making the German channel produce English during a smoke test.
+    if language is None:
+        lower_ref = channel_ref.lower()
+        if "avex_exchange" in lower_ref:
+            language = "en"
+        elif "avexmarkets" in lower_ref:
+            language = "fr"
+        elif "avex_news" in lower_ref:
+            language = "de"
+
+    dispatcher = get_dispatcher()
+    processing = await msg.reply_text("⏳ Generating AVEX test post...")
+    ok, result = await dispatcher.avex_test(channel_id, language)
+    prefix = "✅" if ok else "❌"
+    await processing.edit_text(f"{prefix} {result}")
 
 
 async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2442,6 +2519,7 @@ class TelegramAdapter(BaseAdapter):
         self.app.add_handler(CommandHandler("settopic", settopic_command))
         self.app.add_handler(CommandHandler("filter", filter_command))
         self.app.add_handler(CommandHandler("digest", digest_command))
+        self.app.add_handler(CommandHandler("avex_test", avex_test_command))
         self.app.add_handler(CommandHandler("import", import_command))
         self.app.add_handler(CommandHandler("export", export_command))
         self.app.add_handler(CommandHandler("status", status_command))
@@ -2889,7 +2967,10 @@ class TelegramAdapter(BaseAdapter):
         # strings, which Telegram's HTML parser rejects as an invalid entity
         # and fails the whole message send.
         if message.channel_footer:
-            footer = [message.channel_footer]
+            # channel_footer is stored as Markdown so it can also be used by
+            # templates. The default Telegram path sends HTML, therefore convert
+            # the footer here instead of leaking Markdown syntax into the post.
+            footer = [markdown_to_telegram_html(message.channel_footer)]
         else:
             footer = [
                 f'🔗 <a href="{self._escape_html(message.link)}">Read more</a>',
@@ -2931,7 +3012,9 @@ class TelegramAdapter(BaseAdapter):
             parts.append(summary[:497] + "..." if len(summary) > 500 else summary)
             parts.append("")
         if message.channel_footer:
-            parts.append(message.channel_footer)
+            # Plain-text fallback should show the label, not Markdown syntax.
+            footer_text = re.sub(r"\[([^\]]+)\]\(https?://[^)]+\)", r"\1", message.channel_footer)
+            parts.append(footer_text)
         else:
             parts.append(f"🔗 {message.link}")
             parts.append(f"📰 {message.source}")
