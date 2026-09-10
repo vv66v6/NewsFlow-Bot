@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     news_max_source_chars: int = 6000
     news_max_completion_tokens: int = 1200
     news_image_percent: int = 40
-    news_image_model: str = "gpt-image-2.5-flare"
+    news_image_model: str = "gpt-image-2"
     news_image_size: str = "1536x1024"
     news_image_quality: Literal["low", "medium", "high", "auto"] = "medium"
     news_system_prompt: str | None = None

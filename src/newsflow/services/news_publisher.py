@@ -27,7 +27,8 @@ DEFAULT_SYSTEM_PROMPT = """You are the editor of a professional crypto news chan
 Rewrite the supplied RSS news item into a concise, factual Telegram news post.
 
 Rules:
-- Write ONLY in {language}.
+- Write ONLY in {language}. The headline and body MUST be fully written in {language}; do not leave the English source text unchanged.
+- Translate proper explanatory wording into {language}, while keeping names, ticker symbols, company names, and official product names when appropriate.
 - Return valid JSON with exactly these keys: headline, body, image_prompt.
 - headline: one short, news-style headline. Do not add an emoji.
 - body: 1 to 3 short paragraphs, usually 2. Keep it concise and readable.
@@ -80,6 +81,60 @@ class NewsPublisher:
         # Keep enough context for useful rewrites without sending entire scraped articles.
         return truncate_text(text, self.settings.news_max_source_chars)
 
+    @staticmethod
+    def _language_quality_ok(text: str, target_language: str) -> bool:
+        """Reject obvious English pass-throughs for German/French output.
+
+        This is deliberately conservative: it is not a full language detector,
+        but it must reliably reject an unchanged English crypto-news paragraph.
+        """
+        import re
+
+        primary = target_language.replace("_", "-").split("-")[0].lower()
+        if primary == "en":
+            return True
+        if primary not in {"de", "fr"}:
+            return True
+
+        words = [w.lower() for w in re.findall(r"[A-Za-zÄÖÜäöüßÀ-ÿ]+", text)]
+        if len(words) < 8:
+            return False
+        wordset = set(words)
+
+        english = {
+            "the", "and", "of", "to", "in", "for", "on", "with", "from", "after",
+            "before", "as", "is", "are", "was", "were", "will", "would", "has",
+            "have", "had", "not", "its", "their", "this", "that", "these", "those",
+            "said", "says", "new", "more", "than", "into", "over", "under", "about",
+            "following", "according", "denies", "profit", "profiting", "crashes",
+            "found", "announced", "flagged", "fresh", "holders",
+        }
+        if primary == "de":
+            target = {
+                "der", "die", "das", "und", "von", "für", "nach", "mit", "auf", "ist",
+                "sind", "wird", "wurden", "hat", "haben", "einer", "einen", "eine",
+                "nicht", "sich", "den", "dem", "des", "als", "auch", "bei", "aus",
+                "über", "durch", "gegen", "zum", "zur", "noch", "bereits", "dass",
+            }
+        else:
+            target = {
+                "le", "la", "les", "des", "et", "de", "pour", "avec", "dans", "est",
+                "sont", "sera", "ont", "une", "un", "pas", "sur", "du", "au", "aux",
+                "que", "qui", "dans", "avec", "mais", "comme", "plus", "selon",
+            }
+
+        english_hits = sum(1 for w in words if w in english)
+        target_hits = sum(1 for w in words if w in target)
+        # Any dense English signal is a hard reject. A short headline/body must
+        # also contain multiple target-language function words.
+        if english_hits >= 3 and english_hits >= target_hits:
+            return False
+        if target_hits < 2:
+            return False
+        if english_hits / max(len(words), 1) > 0.12:
+            return False
+        return True
+
     async def generate_draft(
         self,
         entry_id: int,
@@ -110,23 +165,41 @@ class NewsPublisher:
         except (KeyError, IndexError):
             system = DEFAULT_SYSTEM_PROMPT.format(language=language)
 
-        response = await chat_completions_create(
-            self._client_instance(),
-            model=self.settings.news_model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ],
-            max_completion_tokens=self.settings.news_max_completion_tokens,
-            response_format={"type": "json_object"},
-        )
-        raw = (response.choices[0].message.content or "").strip()
-        data = json.loads(raw)
-        headline = str(data.get("headline", "")).strip()
-        body = str(data.get("body", "")).strip()
-        image_prompt = str(data.get("image_prompt", "")).strip()
-        if not headline or not body:
-            raise ValueError("AI returned an incomplete news draft")
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ]
+        data: dict[str, Any] | None = None
+        headline = body = image_prompt = ""
+        accepted = False
+        for attempt in range(3):
+            response = await chat_completions_create(
+                self._client_instance(),
+                model=self.settings.news_model,
+                messages=messages,
+                max_completion_tokens=self.settings.news_max_completion_tokens,
+                response_format={"type": "json_object"},
+            )
+            raw = (response.choices[0].message.content or "").strip()
+            data = json.loads(raw)
+            headline = str(data.get("headline", "")).strip()
+            body = str(data.get("body", "")).strip()
+            image_prompt = str(data.get("image_prompt", "")).strip()
+            accepted = bool(headline and body and self._language_quality_ok(f"{headline} {body}", target_language))
+            if accepted:
+                break
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"STOP. The previous answer was rejected because it was not fully in {language}. "
+                    f"Translate/rewrite BOTH the headline and body into natural {language}. "
+                    "Do not leave ANY English sentence or headline. Keep proper names, tickers and company names only where they are official names. "
+                    "Return JSON with the same three keys and nothing else."
+                ),
+            })
+
+        if not accepted:
+            raise ValueError(f"AI failed language validation for target language {target_language}")
         draft = NewsDraft(headline=headline, body=body, image_prompt=image_prompt)
         self._draft_cache[key] = draft
         return draft

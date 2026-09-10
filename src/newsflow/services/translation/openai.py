@@ -139,7 +139,6 @@ class OpenAIProvider(TranslationProvider):
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": text},
                 ],
-                temperature=0.3,
                 max_completion_tokens=2000,
             )
 
