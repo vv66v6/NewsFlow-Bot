@@ -2563,11 +2563,11 @@ class TelegramAdapter(BaseAdapter):
         key = (username or "").lstrip("@").lower()
         settings = get_settings()
         if key == "avex_news":
-            return settings.news_footer_de_text, settings.news_footer_de_url, settings.news_promo_de_text, settings.news_promo_url
+            return settings.news_footer_de_text, settings.news_footer_de_url, settings.news_promo_de_text or "💱 Jetzt auf AVEX.CASH handeln", settings.news_promo_url or "https://avex.cash"
         if key == "avex_exchange":
-            return settings.news_footer_en_text, settings.news_footer_en_url, settings.news_promo_en_text, settings.news_promo_url
+            return settings.news_footer_en_text, settings.news_footer_en_url, settings.news_promo_en_text or "💱 Trade on AVEX.CASH", settings.news_promo_url or "https://avex.cash"
         if key == "avexmarkets":
-            return settings.news_footer_fr_text, settings.news_footer_fr_url, settings.news_promo_fr_text, settings.news_promo_url
+            return settings.news_footer_fr_text, settings.news_footer_fr_url, settings.news_promo_fr_text or "💱 Trader sur AVEX.CASH", settings.news_promo_url or "https://avex.cash"
         return None, None, None, None
 
     async def send_message(self, channel_id: str, message: Message) -> bool:
@@ -2915,7 +2915,7 @@ class TelegramAdapter(BaseAdapter):
         if message.footer_text and message.footer_url:
             footer = []
             if message.promo_text and message.promo_url:
-                footer.append(f'<a href="{self._escape_html(message.promo_url)}">{self._escape_html(message.promo_text)}</a>')
+                footer.append(f'<a href="{self._escape_html(message.promo_url)}"><b>{self._escape_html(message.promo_text)}</b></a>')
             footer.append(f'<a href="{self._escape_html(message.footer_url)}">{self._escape_html(message.footer_text)}</a>')
         else:
             footer = [

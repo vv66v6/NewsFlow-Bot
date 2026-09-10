@@ -34,8 +34,8 @@ Rules:
 - Translate proper explanatory wording into {language}, while keeping names, ticker symbols, company names, and official product names when appropriate.
 - Return valid JSON with exactly these keys: headline, body, image_prompt.
 - headline: one short, news-style headline. Do not add an emoji.
-- body: usually 2 short paragraphs and about 60-110 words when the source provides enough factual material. Make the body meaningfully informative, not just one sentence. Do not pad or invent facts when the source is brief.
-- Telegram photo captions have a strict size limit. Keep the headline <= 140 characters and the body <= 650 characters so the complete post, AVEX.CASH CTA and channel footer fit without truncation.
+- body: usually 2 short paragraphs and about 60-110 words when the source provides enough factual material. Make the body meaningfully informative, not just one sentence. Do not pad or invent facts when the source is brief. The body should normally be 350-600 characters.
+- Telegram photo captions have a strict size limit. Keep the headline <= 120 characters and the body <= 650 characters so the complete post, AVEX.CASH CTA and channel footer fit without truncation.
 - Preserve every important fact, number, date, percentage, company, token, person and legal qualification present in the source.
 - Never invent facts, motives, quotes, numbers or conclusions.
 - Do not copy long passages verbatim. Produce an original concise news brief.
@@ -218,6 +218,8 @@ class NewsPublisher:
                 and body
                 and not body.rstrip().endswith(("...", "…"))
                 and not headline.rstrip().endswith(("...", "…"))
+                and len(headline) <= 120
+                and len(body) <= 650
                 and self._language_quality_ok(f"{headline} {body}", target_language)
             )
             if accepted:
@@ -228,7 +230,7 @@ class NewsPublisher:
                     f"STOP. The previous answer was rejected because it was not fully in {language}. "
                     f"Translate/rewrite BOTH the headline and body into natural {language}. "
                     "Do not leave ANY English sentence or headline. Keep proper names, tickers and company names only where they are official names. "
-                    "Return JSON with the same three keys and nothing else. The headline and body must be complete; never end either field with \"...\" or an unfinished word/sentence."
+                    "Return JSON with the same three keys and nothing else. The headline and body must be complete; never use an ellipsis and never end either field with an unfinished word or sentence. Keep the headline <= 120 characters and body <= 650 characters."
                 ),
             })
 

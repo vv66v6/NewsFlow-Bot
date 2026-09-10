@@ -187,3 +187,10 @@ published Docker images.
 - AVEX news captions are generated within a complete Telegram-safe length budget, preventing ellipsis/truncation.
 - Added localized AVEX.CASH CTA links to every AVEX news post.
 - Added a persistent global AVEX autopilot schedule: one story every random 120–180 minutes, with the same story immediately published to all three language channels.
+
+
+## 1.0.6
+
+- AVEX production channels no longer receive post-subscribe preview posts, so previews cannot bypass the 120–180 minute publishing cadence.
+- Strengthened AI output validation: headlines <= 120 chars, bodies <= 650 chars, and ellipsis/unfinished output is rejected and regenerated.
+- AVEX.CASH CTA is guaranteed at the final Telegram send boundary and rendered as a bold clickable link above the channel footer.
