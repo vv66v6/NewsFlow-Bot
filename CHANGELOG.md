@@ -1,3 +1,9 @@
+# v1.0.3
+
+- Resolve AVEX footer links from the actual Telegram destination channel username.
+- Do not attach AVEX production links to arbitrary channels sharing DE/EN/FR languages.
+- Increase normal news-body target to about 70-140 words when source material supports it.
+
 # Changelog
 
 Notable changes to NewsFlow-Bot. The format follows

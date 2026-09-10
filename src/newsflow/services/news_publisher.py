@@ -31,7 +31,7 @@ Rules:
 - Translate proper explanatory wording into {language}, while keeping names, ticker symbols, company names, and official product names when appropriate.
 - Return valid JSON with exactly these keys: headline, body, image_prompt.
 - headline: one short, news-style headline. Do not add an emoji.
-- body: 1 to 3 short paragraphs, usually 2. Keep it concise and readable.
+- body: usually 2 short paragraphs and about 70-140 words when the source provides enough factual material. Make the body meaningfully informative, not just one sentence. Do not pad or invent facts when the source is brief.
 - Preserve every important fact, number, date, percentage, company, token, person and legal qualification present in the source.
 - Never invent facts, motives, quotes, numbers or conclusions.
 - Do not copy long passages verbatim. Produce an original concise news brief.

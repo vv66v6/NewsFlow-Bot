@@ -98,3 +98,8 @@ Check the logs for:
 - successful dispatches
 
 If image generation fails, the article is still posted as text. The bot deliberately degrades to text instead of losing the news item.
+
+
+## v1.0.3
+
+The AVEX footer is resolved from the actual Telegram destination channel username, not from the language. Therefore a German test channel does not receive the production @avex_news footer. News bodies target about 70-140 words when the source contains enough facts; short sources are not padded with invented information.

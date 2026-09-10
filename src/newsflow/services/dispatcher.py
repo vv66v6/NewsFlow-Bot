@@ -579,12 +579,9 @@ class Dispatcher:
                     entry.published_at.isoformat() if entry.published_at else "",
                 )
                 image_path = await self._news_publisher.get_shared_image(entry.id, draft.image_prompt)
-                footer = {
-                    "de": (self.settings.news_footer_de_text, self.settings.news_footer_de_url),
-                    "en": (self.settings.news_footer_en_text, self.settings.news_footer_en_url),
-                    "fr": (self.settings.news_footer_fr_text, self.settings.news_footer_fr_url),
-                }.get(lang.split("-")[0])
-                footer_text, footer_url = footer if footer else (None, None)
+                # The Telegram adapter resolves the footer from the actual destination
+                # channel username. Do not derive it from language: multiple channels can
+                # share the same language (for example a test DE channel and @avex_news).
                 return Message(
                     title=draft.headline,
                     summary=draft.body,
@@ -597,8 +594,8 @@ class Dispatcher:
                     thread_id=subscription.message_thread_id,
                     show_image=image_path is not None,
                     image_path=str(image_path) if image_path else None,
-                    footer_text=footer_text,
-                    footer_url=footer_url,
+                    footer_text=None,
+                    footer_url=None,
                 )
             except Exception:
                 logger.exception(

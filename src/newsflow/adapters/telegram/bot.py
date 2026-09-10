@@ -2391,6 +2391,11 @@ class TelegramAdapter(BaseAdapter):
     def __init__(self, token: str) -> None:
         self.token = token
         self.app: Application | None = None
+        # Cache channel username -> AVEX footer for the current process.
+        # This is intentionally resolved from the actual destination chat,
+        # not from the subscription language, so test channels never get
+        # the production AVEX link by accident.
+        self._channel_username_cache: dict[str, str | None] = {}
 
     @property
     def platform_name(self) -> str:
@@ -2535,6 +2540,36 @@ class TelegramAdapter(BaseAdapter):
             return str(e.new_chat_id)
         return None
 
+    async def _resolve_avex_footer(self, channel_id: str) -> tuple[str | None, str | None]:
+        """Return the AVEX footer for the actual Telegram destination.
+
+        Language is deliberately not used here because a test German channel
+        must not point readers to @avex_news. The Bot API getChat response
+        provides the channel username, which we cache after the first lookup.
+        """
+        if not self.app:
+            return None, None
+        username = self._channel_username_cache.get(str(channel_id))
+        if username is None and str(channel_id) not in self._channel_username_cache:
+            try:
+                chat = await self.app.bot.get_chat(chat_id=int(channel_id))
+                username = getattr(chat, "username", None)
+                self._channel_username_cache[str(channel_id)] = username
+            except Exception:
+                logger.exception("Failed to resolve Telegram chat username for %s", channel_id)
+                self._channel_username_cache[str(channel_id)] = None
+                return None, None
+
+        key = (username or "").lstrip("@").lower()
+        settings = get_settings()
+        if key == "avex_news":
+            return settings.news_footer_de_text, settings.news_footer_de_url
+        if key == "avex_exchange":
+            return settings.news_footer_en_text, settings.news_footer_en_url
+        if key == "avexmarkets":
+            return settings.news_footer_fr_text, settings.news_footer_fr_url
+        return None, None
+
     async def send_message(self, channel_id: str, message: Message) -> bool:
         """Send a message to a Telegram chat. Raises ChannelGoneError
         when the chat is permanently unreachable (deleted, bot kicked,
@@ -2544,6 +2579,14 @@ class TelegramAdapter(BaseAdapter):
             return False
 
         try:
+            # Resolve the production footer from the destination channel itself.
+            # AVEX AI messages arrive without a footer so the adapter can make
+            # this channel-specific decision at the final send boundary.
+            if self.app and message.link == "" and message.source == "":
+                footer_text, footer_url = await self._resolve_avex_footer(channel_id)
+                message.footer_text = footer_text
+                message.footer_url = footer_url
+
             if message.template_text is not None:
                 await self._send_template_message(
                     channel_id,
