@@ -2540,7 +2540,7 @@ class TelegramAdapter(BaseAdapter):
             return str(e.new_chat_id)
         return None
 
-    async def _resolve_avex_footer(self, channel_id: str) -> tuple[str | None, str | None]:
+    async def _resolve_avex_footer(self, channel_id: str) -> tuple[str | None, str | None, str | None, str | None]:
         """Return the AVEX footer for the actual Telegram destination.
 
         Language is deliberately not used here because a test German channel
@@ -2558,17 +2558,17 @@ class TelegramAdapter(BaseAdapter):
             except Exception:
                 logger.exception("Failed to resolve Telegram chat username for %s", channel_id)
                 self._channel_username_cache[str(channel_id)] = None
-                return None, None
+                return None, None, None, None
 
         key = (username or "").lstrip("@").lower()
         settings = get_settings()
         if key == "avex_news":
-            return settings.news_footer_de_text, settings.news_footer_de_url
+            return settings.news_footer_de_text, settings.news_footer_de_url, settings.news_promo_de_text, settings.news_promo_url
         if key == "avex_exchange":
-            return settings.news_footer_en_text, settings.news_footer_en_url
+            return settings.news_footer_en_text, settings.news_footer_en_url, settings.news_promo_en_text, settings.news_promo_url
         if key == "avexmarkets":
-            return settings.news_footer_fr_text, settings.news_footer_fr_url
-        return None, None
+            return settings.news_footer_fr_text, settings.news_footer_fr_url, settings.news_promo_fr_text, settings.news_promo_url
+        return None, None, None, None
 
     async def send_message(self, channel_id: str, message: Message) -> bool:
         """Send a message to a Telegram chat. Raises ChannelGoneError
@@ -2583,9 +2583,11 @@ class TelegramAdapter(BaseAdapter):
             # AVEX AI messages arrive without a footer so the adapter can make
             # this channel-specific decision at the final send boundary.
             if self.app and message.link == "" and message.source == "":
-                footer_text, footer_url = await self._resolve_avex_footer(channel_id)
+                footer_text, footer_url, promo_text, promo_url = await self._resolve_avex_footer(channel_id)
                 message.footer_text = footer_text
                 message.footer_url = footer_url
+                message.promo_text = promo_text
+                message.promo_url = promo_url
 
             if message.template_text is not None:
                 await self._send_template_message(
@@ -2906,16 +2908,15 @@ class TelegramAdapter(BaseAdapter):
         """
         limit = max_length or self._TG_TEXT_LIMIT
         summary = message.display_summary
-        if summary and len(summary) > 500:
-            summary = summary[:497] + "..."
 
         # Link needs HTML-escape too: RSS URLs often contain `&` in query
         # strings, which Telegram's HTML parser rejects as an invalid entity
         # and fails the whole message send.
         if message.footer_text and message.footer_url:
-            footer = [
-                f'<a href="{self._escape_html(message.footer_url)}">{self._escape_html(message.footer_text)}</a>',
-            ]
+            footer = []
+            if message.promo_text and message.promo_url:
+                footer.append(f'<a href="{self._escape_html(message.promo_url)}">{self._escape_html(message.promo_text)}</a>')
+            footer.append(f'<a href="{self._escape_html(message.footer_url)}">{self._escape_html(message.footer_text)}</a>')
         else:
             footer = [
                 f'🔗 <a href="{self._escape_html(message.link)}">Read more</a>',
@@ -2941,9 +2942,17 @@ class TelegramAdapter(BaseAdapter):
                 return text
             text = compose(message.display_title[:title_cap] + "…", None)
         if len(text) > limit:
-            # Only reachable with a pathological escape-heavy link; the
-            # slice may cut a tag, which the plain-text fallback absorbs.
-            text = text[: limit - 1] + "…"
+            # Keep the headline/CTA/footer intact and shorten only the body at a
+            # sentence boundary. Never append an ellipsis: the published post
+            # must remain complete rather than visibly truncated.
+            if summary:
+                available = max(0, limit - len(compose(message.display_title, "")) - 2)
+                candidate = summary[:available].rstrip()
+                boundary = max(candidate.rfind(". "), candidate.rfind("! "), candidate.rfind("? "))
+                if boundary >= max(80, available // 2):
+                    candidate = candidate[: boundary + 1]
+                text = compose(message.display_title, candidate)
+            return text[:limit]
         return text
 
     def _format_message_plain(self, message: Message) -> str:
@@ -2957,6 +2966,8 @@ class TelegramAdapter(BaseAdapter):
             parts.append(summary[:497] + "..." if len(summary) > 500 else summary)
             parts.append("")
         if message.footer_text and message.footer_url:
+            if message.promo_text and message.promo_url:
+                parts.append(f"{message.promo_text} — {message.promo_url}")
             parts.append(f"{message.footer_text} — {message.footer_url}")
         else:
             parts.append(f"🔗 {message.link}")

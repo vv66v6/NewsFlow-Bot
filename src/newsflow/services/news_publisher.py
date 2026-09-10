@@ -7,6 +7,8 @@ import base64
 import hashlib
 import json
 import logging
+import random
+from datetime import UTC, datetime, timedelta
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,7 +34,8 @@ Rules:
 - Translate proper explanatory wording into {language}, while keeping names, ticker symbols, company names, and official product names when appropriate.
 - Return valid JSON with exactly these keys: headline, body, image_prompt.
 - headline: one short, news-style headline. Do not add an emoji.
-- body: usually 2 short paragraphs and about 70-140 words when the source provides enough factual material. Make the body meaningfully informative, not just one sentence. Do not pad or invent facts when the source is brief.
+- body: usually 2 short paragraphs and about 60-110 words when the source provides enough factual material. Make the body meaningfully informative, not just one sentence. Do not pad or invent facts when the source is brief.
+- Telegram photo captions have a strict size limit. Keep the headline <= 140 characters and the body <= 650 characters so the complete post, AVEX.CASH CTA and channel footer fit without truncation.
 - Preserve every important fact, number, date, percentage, company, token, person and legal qualification present in the source.
 - Never invent facts, motives, quotes, numbers or conclusions.
 - Do not copy long passages verbatim. Produce an original concise news brief.
@@ -59,6 +62,9 @@ class NewsPublisher:
         self._draft_cache: dict[tuple[str, str], NewsDraft] = {}
         self._image_cache: dict[str, Path | None] = {}
         self._image_locks: dict[str, asyncio.Lock] = {}
+        self._schedule_lock = asyncio.Lock()
+        self._schedule_state_path = self.settings.data_dir / "avex_news_schedule.json"
+        self._schedule_state: dict[str, Any] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -231,6 +237,66 @@ class NewsPublisher:
         draft = NewsDraft(headline=headline, body=body, image_prompt=image_prompt)
         self._draft_cache[key] = draft
         return draft
+
+    def _load_schedule_state(self) -> dict[str, Any]:
+        if self._schedule_state is not None:
+            return self._schedule_state
+        state: dict[str, Any] = {}
+        try:
+            if self._schedule_state_path.is_file():
+                state = json.loads(self._schedule_state_path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.warning("Could not read AVEX news schedule state; starting a fresh schedule")
+        self._schedule_state = state
+        return state
+
+    def _save_schedule_state(self) -> None:
+        self._schedule_state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._schedule_state_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self._schedule_state or {}, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(self._schedule_state_path)
+
+    async def can_send_story(self, story_key: str) -> bool:
+        """Allow one story every random 120-180 minutes, while all language
+        subscriptions may publish the same story immediately after the first one.
+        The state is persisted so restarts do not reset the schedule."""
+        async with self._schedule_lock:
+            state = self._load_schedule_state()
+            if state.get("story_key") == story_key:
+                return True
+            last_sent = state.get("last_sent_at")
+            delay = int(state.get("next_delay_minutes") or self.settings.news_post_min_interval_minutes)
+            if not last_sent:
+                return True
+            try:
+                last_dt = datetime.fromisoformat(last_sent)
+            except ValueError:
+                return True
+            if datetime.now(UTC) >= last_dt + timedelta(minutes=delay):
+                return True
+            return False
+
+    async def record_story_sent(self, story_key: str) -> None:
+        """Start the next random inter-story window after the first successful
+        delivery of a story. Other language subscriptions for the same story
+        remain allowed."""
+        async with self._schedule_lock:
+            state = self._load_schedule_state()
+            if state.get("story_key") == story_key and state.get("last_sent_at"):
+                return
+            min_delay = self.settings.news_post_min_interval_minutes
+            max_delay = self.settings.news_post_max_interval_minutes
+            delay = random.randint(min_delay, max_delay)
+            self._schedule_state = {
+                "story_key": story_key,
+                "last_sent_at": datetime.now(UTC).isoformat(),
+                "next_delay_minutes": delay,
+            }
+            try:
+                self._save_schedule_state()
+            except Exception:
+                logger.exception("Could not persist AVEX news schedule state")
+            logger.info("AVEX news story %s opened a %s-minute next-post window", story_key, delay)
 
     def should_generate_image(self, story_key: str) -> bool:
         """Deterministic ~40% choice so all three language posts share the same decision."""

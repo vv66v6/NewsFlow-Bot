@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     news_footer_en_url: str = "https://t.me/avex_exchange"
     news_footer_fr_text: str = "AVEX | Plateforme d'échange de cryptomonnaies"
     news_footer_fr_url: str = "https://t.me/avexmarkets"
+    news_promo_de_text: str = "💱 Jetzt auf AVEX.CASH handeln"
+    news_promo_en_text: str = "💱 Trade on AVEX.CASH"
+    news_promo_fr_text: str = "💱 Trader sur AVEX.CASH"
+    news_promo_url: str = "https://avex.cash"
+    news_post_min_interval_minutes: int = 120
+    news_post_max_interval_minutes: int = 180
 
     # Scheduling
     fetch_interval_minutes: int = 60
@@ -227,6 +233,21 @@ class Settings(BaseSettings):
 
                 return json.loads(s)
             return [part.strip() for part in s.split(",") if part.strip()]
+        return v
+
+    @field_validator("news_post_min_interval_minutes", "news_post_max_interval_minutes")
+    @classmethod
+    def validate_news_post_intervals(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("news post intervals must be at least 1 minute")
+        return v
+
+    @field_validator("news_post_max_interval_minutes")
+    @classmethod
+    def validate_news_post_interval_order(cls, v: int, info: ValidationInfo) -> int:
+        min_value = info.data.get("news_post_min_interval_minutes")
+        if min_value is not None and v < min_value:
+            raise ValueError("news_post_max_interval_minutes must be >= news_post_min_interval_minutes")
         return v
 
     @field_validator("news_image_percent")

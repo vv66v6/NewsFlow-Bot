@@ -180,3 +180,10 @@ published Docker images.
 - Added per-story image-generation locking to prevent concurrent duplicate image generation.
 - Serialized post-subscribe previews with the main dispatch mutex to prevent duplicate article sends caused by a preview/dispatch race.
 - Increased default AI completion budget to 1800 tokens and reject incomplete headline/body fields ending in ellipsis.
+
+
+## 1.0.5
+
+- AVEX news captions are generated within a complete Telegram-safe length budget, preventing ellipsis/truncation.
+- Added localized AVEX.CASH CTA links to every AVEX news post.
+- Added a persistent global AVEX autopilot schedule: one story every random 120–180 minutes, with the same story immediately published to all three language channels.

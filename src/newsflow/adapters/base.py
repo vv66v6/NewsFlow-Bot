@@ -121,6 +121,8 @@ class Message:
     image_path: str | None = None
     footer_text: str | None = None
     footer_url: str | None = None
+    promo_text: str | None = None
+    promo_url: str | None = None
 
     @property
     def display_title(self) -> str:

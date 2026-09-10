@@ -354,6 +354,19 @@ class Dispatcher:
                     )
                     continue
 
+                # AVEX autopilot publishes one story globally every random 120-180 minutes.
+                # All three language subscriptions for the currently active story are allowed;
+                # newer stories stay unsent until the next window.
+                story_key = None
+                if self._news_publisher.enabled and subscription.platform == "telegram":
+                    story_key = self._news_publisher.story_key(entry.link, entry.guid)
+                    if not await self._news_publisher.can_send_story(story_key):
+                        logger.debug(
+                            "AVEX news schedule is waiting; deferring entry %s for %s/%s",
+                            entry.id, subscription.platform, subscription.platform_channel_id,
+                        )
+                        break
+
                 # Create message (with translation if enabled)
                 message = await self._create_message(entry, subscription, session)
 
@@ -366,6 +379,8 @@ class Dispatcher:
                 if success:
                     # Mark as sent
                     await sub_repo.mark_entry_sent(subscription.id, entry.feed_id, entry.guid)
+                    if story_key is not None:
+                        await self._news_publisher.record_story_sent(story_key)
                     sent_count += 1
                     logger.debug(
                         f"Sent entry {entry.id} to {subscription.platform}/{subscription.platform_channel_id}"
