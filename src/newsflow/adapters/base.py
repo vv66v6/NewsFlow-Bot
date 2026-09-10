@@ -98,8 +98,6 @@ class Message:
     source: str
     published_at: datetime | None = None
     image_url: str | None = None
-    image_path: str | None = None
-    channel_footer: str = ""
 
     # Optional translated versions
     title_translated: str | None = None
@@ -120,6 +118,9 @@ class Message:
     # image_url); Telegram maps False to disable_web_page_preview. Distinct from
     # image_url is None — a link preview grows from the page even without metadata.
     show_image: bool = True
+    image_path: str | None = None
+    footer_text: str | None = None
+    footer_url: str | None = None
 
     @property
     def display_title(self) -> str:
@@ -148,8 +149,6 @@ class Message:
             "source": self.source,
             "published": published,
             "image_url": self.image_url or "",
-            "image_path": self.image_path or "",
-            "channel_footer": self.channel_footer,
             "mention": self.mention or "",
             "original_title": self.title,
             "translated_title": self.title_translated or "",

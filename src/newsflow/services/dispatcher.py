@@ -37,8 +37,8 @@ from newsflow.models.subscription import Subscription
 from newsflow.repositories.feed_repository import FeedRepository
 from newsflow.repositories.subscription_repository import SubscriptionRepository
 from newsflow.services.feed_service import FeedService
-from newsflow.services.ai_content import generate_image, rewrite_article, should_show_image
 from newsflow.services.translation.factory import get_translation_service
+from newsflow.services.news_publisher import get_news_publisher
 
 if TYPE_CHECKING:
     pass
@@ -125,6 +125,7 @@ class Dispatcher:
         # path, and two interleaved rounds double-send.
         self._dispatch_mutex = asyncio.Lock()
         self.totals = DispatcherTotals()
+        self._news_publisher = get_news_publisher()
 
     def spawn(self, coro: Any, *, name: str | None = None) -> asyncio.Task:
         """Schedule `coro` as a fire-and-forget task, held by a strong ref
@@ -229,18 +230,13 @@ class Dispatcher:
                 # Channels already found gone this cycle. The bulk UPDATE does not sync
                 # identity-mapped instances, so the re-fetch still sees is_active=True.
                 dead_channels: set[tuple[str, str]] = set()
-                # A channel is a publication destination, not a feed. Even if a
-                # channel subscribes to several feeds, deliver at most one article
-                # per dispatch cycle to keep the 60–120 minute cadence predictable.
-                published_channels: set[tuple[str, str]] = set()
                 for sub_id in sub_ids:
                     sub = await sub_repo.get_subscription_by_id(sub_id)
                     if sub is None or not sub.is_active:
                         # Deleted or deactivated since the snapshot (only
                         # visible here after a rollback refreshed the row).
                         continue
-                    channel_key = (sub.platform, sub.platform_channel_id)
-                    if channel_key in dead_channels or channel_key in published_channels:
+                    if (sub.platform, sub.platform_channel_id) in dead_channels:
                         continue
                     sent = await self._dispatch_to_subscription(
                         session,
@@ -249,8 +245,6 @@ class Dispatcher:
                         dead_channels=dead_channels,
                     )
                     result.messages_sent += sent
-                    if sent:
-                        published_channels.add(channel_key)
                     # Commit after each subscription, never once per round: messages went out when
                     # the adapter returned, so a late failure would roll back the whole round's
                     # sent-marks and re-push everything. expire_on_commit=False keeps objects usable.
@@ -311,9 +305,7 @@ class Dispatcher:
             return 0
 
         # Get unsent entries
-        entries = await sub_repo.get_unsent_entries_for_subscription(
-                    subscription.id, limit=self.settings.max_posts_per_channel_per_cycle
-                )
+        entries = await sub_repo.get_unsent_entries_for_subscription(subscription.id, limit=10)
 
         if not entries:
             return 0
@@ -564,82 +556,88 @@ class Dispatcher:
         entry: FeedEntry,
         subscription: Subscription,
         session: AsyncSession,
-        *,
-        force_default_template: bool = False,
     ) -> Message:
-        """Create an AVEX-ready message, optionally using AI editorial rewriting."""
-        target_language_raw = subscription.target_language
-        target_language = target_language_raw.lower().split("-")[0]
-        lang = "zh" if target_language.startswith("zh") else "en"
-        source = get_source_name(entry.link, lang)
+        """Create a Telegram/Discord message, using AVEX AI mode when enabled."""
+        lang = subscription.target_language.lower()
+        source_lang = "zh" if lang.startswith("zh") else "en"
+        source = get_source_name(entry.link, source_lang)
 
-        # Give the editorial model the fullest available article text. The normal
-        # Telegram renderer still enforces its own message-size limit later.
         raw_body = entry.content or entry.summary or ""
         plain_summary, _images = clean_html(raw_body)
-        plain_summary = plain_summary.strip()[:7000]
+        plain_summary = truncate_text(plain_summary, MAX_SUMMARY_LENGTH)
         plain_summary = dedup_summary(entry.title, plain_summary)
+
+        if self._news_publisher.enabled and subscription.platform == "telegram":
+            try:
+                draft = await self._news_publisher.generate_draft(
+                    entry.id,
+                    entry.title,
+                    entry.summary,
+                    entry.content,
+                    entry.link,
+                    subscription.target_language,
+                    entry.published_at.isoformat() if entry.published_at else "",
+                )
+                image_path = await self._news_publisher.get_shared_image(entry.id, draft.image_prompt)
+                footer = {
+                    "de": (self.settings.news_footer_de_text, self.settings.news_footer_de_url),
+                    "en": (self.settings.news_footer_en_text, self.settings.news_footer_en_url),
+                    "fr": (self.settings.news_footer_fr_text, self.settings.news_footer_fr_url),
+                }.get(lang.split("-")[0])
+                footer_text, footer_url = footer if footer else (None, None)
+                return Message(
+                    title=draft.headline,
+                    summary=draft.body,
+                    link="",
+                    source="",
+                    published_at=None,
+                    image_url=None,
+                    template_text=None,
+                    mention=subscription.mention,
+                    thread_id=subscription.message_thread_id,
+                    show_image=image_path is not None,
+                    image_path=str(image_path) if image_path else None,
+                    footer_text=footer_text,
+                    footer_url=footer_url,
+                )
+            except Exception:
+                logger.exception(
+                    "AI news generation failed for entry %s; falling back to normal feed delivery",
+                    entry.id,
+                )
 
         title_translated: str | None = None
         summary_translated: str | None = None
-
-        # AVEX mode: rewrite rather than literal translation. This produces native
-        # editorial copy independently for EN/FR/DE.
-        rewritten = None
-        if self.settings.ai_rewrite_enabled and target_language in {"en", "fr", "de"}:
-            rewritten = await rewrite_article(entry.title, plain_summary, target_language)
-        if rewritten:
-            title_translated, summary_translated = rewritten
-        elif subscription.translate:
+        if subscription.translate:
             title_translated, summary_translated = await self._translate_entry(
-                entry, target_language_raw, session, plain_summary
+                entry, subscription.target_language, session, plain_summary
             )
-
-        # Decide once per source entry whether all language versions should carry an image.
-        # RSS image is preferred; if absent, optionally generate one cached image.
-        show_image = (
-            subscription.show_image is not False
-            and should_show_image(entry.id, self.settings.post_image_probability)
-        )
-        image_url = entry.image_url if show_image else None
-        image_path = None
-        if show_image and not image_url and should_show_image(entry.id + 1000000007, self.settings.ai_image_probability):
-            generated = await generate_image(
-                entry.id,
-                title_translated or entry.title,
-                summary_translated or plain_summary,
-            )
-            image_path = str(generated) if generated else None
-
-        footer = self._channel_footer(target_language)
 
         template_text: str | None = None
-        if subscription.message_template and not force_default_template:
+        if subscription.message_template:
             pretrim = Message(
                 title=entry.title,
                 summary=plain_summary,
                 link=entry.link,
                 source=source,
                 published_at=entry.published_at,
-                image_url=image_url,
-                image_path=image_path,
+                image_url=entry.image_url,
                 title_translated=title_translated,
                 summary_translated=summary_translated,
-                channel_footer=footer,
                 mention=subscription.mention,
             )
             try:
-                template_text = render_template(
-                    subscription.message_template, pretrim.to_template_values()
-                ) or None
-                if template_text and footer and "{channel_footer}" not in subscription.message_template:
-                    template_text = f"{template_text}\n\n{footer}"
+                template_text = (
+                    render_template(subscription.message_template, pretrim.to_template_values()) or None
+                )
             except Exception:
                 logger.exception(f"Template render failed for subscription {subscription.id}")
 
-        if subscription.show_summary is False and not self.settings.ai_rewrite_enabled:
+        if subscription.show_summary is False:
             plain_summary = ""
             summary_translated = None
+        show_image = subscription.show_image is not False
+        image_url = entry.image_url if show_image else None
 
         return Message(
             title=entry.title,
@@ -648,25 +646,13 @@ class Dispatcher:
             source=source,
             published_at=entry.published_at,
             image_url=image_url,
-            image_path=image_path,
             title_translated=title_translated,
             summary_translated=summary_translated,
             template_text=template_text,
-            channel_footer=footer,
             mention=subscription.mention,
             thread_id=subscription.message_thread_id,
             show_image=show_image,
         )
-
-    def _channel_footer(self, language: str) -> str:
-        """Return a localized AVEX channel footer as Markdown."""
-        mapping = {
-            "en": (self.settings.avex_en_channel_name, self.settings.avex_en_channel_url),
-            "fr": (self.settings.avex_fr_channel_name, self.settings.avex_fr_channel_url),
-            "de": (self.settings.avex_de_channel_name, self.settings.avex_de_channel_url),
-        }
-        name, url = mapping.get(language, mapping["en"])
-        return f"[{name}]({url})" if url else name
 
     async def run_platform_monitor(self, interval_seconds: int = 30) -> None:
         """Periodically touch a per-platform heartbeat while its adapter
@@ -778,59 +764,6 @@ class Dispatcher:
                     )
         except Exception:
             logger.exception(f"notify_feed_deactivated({feed_id}) failed")
-
-    async def avex_test(self, channel_id: str, language: str | None = None) -> tuple[bool, str]:
-        """Send the newest stored article to an AVEX channel without marking it sent.
-
-        This is an explicit smoke-test path: it uses the real AVEX editorial pipeline,
-        including the channel footer and optional image handling, but does not consume
-        the article from the normal delivery queue.
-        """
-        adapter = self._adapters.get("telegram")
-        if adapter is None:
-            return False, "Telegram adapter is not ready."
-
-        session_factory = get_session_factory()
-        async with session_factory() as session:
-            sub_repo = SubscriptionRepository(session)
-            subscriptions = await sub_repo.get_all_active_subscriptions()
-            candidates = [
-                sub
-                for sub in subscriptions
-                if sub.platform == "telegram" and sub.platform_channel_id == str(channel_id)
-            ]
-            if not candidates:
-                return False, "No active feed subscription exists for this channel."
-
-            feed_repo = FeedRepository(session)
-            newest: FeedEntry | None = None
-            chosen_sub: Subscription | None = None
-            for sub in candidates:
-                entries = await feed_repo.get_recent_entries(sub.feed_id, limit=10)
-                for entry in entries:
-                    if newest is None:
-                        newest, chosen_sub = entry, sub
-                        continue
-                    current_key = entry.published_at or datetime.min.replace(tzinfo=UTC)
-                    newest_key = newest.published_at or datetime.min.replace(tzinfo=UTC)
-                    if current_key > newest_key:
-                        newest, chosen_sub = entry, sub
-
-            if newest is None or chosen_sub is None:
-                return False, "No stored article is available for this channel."
-
-            # Keep the stored subscription settings intact, but force the test through
-            # the default AVEX layout so an old custom template cannot hide the fix.
-            if language:
-                chosen_sub.target_language = language
-                chosen_sub.translate = True
-            message = await self._create_message(
-                newest, chosen_sub, session, force_default_template=True
-            )
-            sent = await adapter.send_message(str(channel_id), message)
-            if sent:
-                return True, f"Test post sent from entry {newest.id}."
-            return False, "Telegram did not confirm the test post."
 
     async def schedule_preview(self, subscription_id: int) -> None:
         """Fire-and-forget wrapper for dispatch_subscription, safe to use

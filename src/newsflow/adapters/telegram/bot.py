@@ -225,8 +225,6 @@ WELCOME_TEXT = (
     "/digest enable weekly &lt;weekday&gt; &lt;hour&gt; [lang] [tz] — Weekly digest\n"
     "/digest disable — Turn off\n"
     "/digest now — Generate and send one immediately\n\n"
-    "<b>AVEX:</b>\n"
-    "/avex_test [@channel] [en|fr|de] — Send the newest stored article through the AVEX pipeline\n\n"
     "<b>Other:</b>\n"
     "/status — Bot status\n"
     "/help — This message\n\n"
@@ -253,7 +251,6 @@ _MENU_COMMANDS: list[tuple[str, str]] = [
     ("template", "Custom message layout for a feed"),
     ("settopic", "Deliver a feed to the current topic"),
     ("digest", "Configure the AI daily/weekly digest"),
-    ("avex_test", "Send an AVEX test post"),
     ("status", "Show bot status"),
     ("help", "Show the full command list"),
 ]
@@ -361,80 +358,6 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
     await processing_msg.edit_text(message, parse_mode="HTML")
-
-
-async def avex_test_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a real stored article through the AVEX pipeline without consuming it."""
-    msg = update.message
-    chat = update.effective_chat
-    user = update.effective_user
-    if msg is None or chat is None or user is None:
-        return
-    if not await _require_group_admin(update, context):
-        return
-
-    args = list(context.args)
-    channel_ref: str | None = None
-    language: str | None = None
-    for arg in args:
-        value = arg.strip().lower()
-        if value in {"en", "fr", "de"}:
-            language = value
-        elif not channel_ref:
-            channel_ref = arg
-
-    if channel_ref is None and chat.type == ChatType.CHANNEL:
-        channel_ref = str(chat.id)
-    elif channel_ref is None:
-        await msg.reply_text(
-            "Usage: /avex_test @avex_exchange [en|fr|de]\n"
-            "/avex_test @avexmarkets [en|fr|de]\n"
-            "/avex_test @avex_news [en|fr|de]"
-        )
-        return
-
-    # Resolve @username to the numeric Telegram channel id. Reuse the same access
-    # checks as the other channel-management commands.
-    if channel_ref.startswith("@"): 
-        try:
-            target = await context.bot.get_chat(channel_ref)
-        except Exception:
-            await msg.reply_text(f"⚠️ Can't access {channel_ref}.")
-            return
-        if target.type != ChatType.CHANNEL:
-            await msg.reply_text(f"⚠️ {channel_ref} is not a channel.")
-            return
-        channel_id = str(target.id)
-        if str(user.id) not in get_settings().admin_user_ids:
-            try:
-                allowed = await _cached_is_admin(context.bot, target.id, user.id)
-            except Exception:
-                logger.exception("Failed to verify channel admin for /avex_test")
-                await msg.reply_text("⚠️ Couldn't verify your admin status in that channel.")
-                return
-            if not allowed:
-                await msg.reply_text("⛔ Only that channel's admins can run /avex_test.")
-                return
-    else:
-        channel_id = channel_ref
-
-    # For the three public AVEX channels, make the intended language explicit when
-    # the caller did not provide one. This prevents an old subscription setting from
-    # making the German channel produce English during a smoke test.
-    if language is None:
-        lower_ref = channel_ref.lower()
-        if "avex_exchange" in lower_ref:
-            language = "en"
-        elif "avexmarkets" in lower_ref:
-            language = "fr"
-        elif "avex_news" in lower_ref:
-            language = "de"
-
-    dispatcher = get_dispatcher()
-    processing = await msg.reply_text("⏳ Generating AVEX test post...")
-    ok, result = await dispatcher.avex_test(channel_id, language)
-    prefix = "✅" if ok else "❌"
-    await processing.edit_text(f"{prefix} {result}")
 
 
 async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2519,7 +2442,6 @@ class TelegramAdapter(BaseAdapter):
         self.app.add_handler(CommandHandler("settopic", settopic_command))
         self.app.add_handler(CommandHandler("filter", filter_command))
         self.app.add_handler(CommandHandler("digest", digest_command))
-        self.app.add_handler(CommandHandler("avex_test", avex_test_command))
         self.app.add_handler(CommandHandler("import", import_command))
         self.app.add_handler(CommandHandler("export", export_command))
         self.app.add_handler(CommandHandler("status", status_command))
@@ -2628,18 +2550,41 @@ class TelegramAdapter(BaseAdapter):
                     message.template_text,
                     message.thread_id,
                     show_preview=message.show_image,
-                    image_path=message.image_path,
                 )
                 return True
-            text = self._format_message(message)
-            if message.image_path:
-                await self._send_local_photo(channel_id, text, message.image_path, message.thread_id)
-                return True
-            # show_image=False maps to "no link preview": Telegram has no
-            # separate image attachment — the preview card IS the image
-            # surface (/setdisplay <url> image off).
-            disable_preview = not message.show_image
+            text = self._format_message(message, max_length=1024 if message.image_path else None)
+            # AVEX image posts are sent as a real Telegram photo with the news
+            # text as caption. Ordinary feed posts continue using send_message.
             from telegram.error import BadRequest
+
+            if message.image_path:
+                try:
+                    with open(message.image_path, "rb") as photo:
+                        await self.app.bot.send_photo(
+                            chat_id=int(channel_id),
+                            photo=photo,
+                            caption=text,
+                            parse_mode="HTML",
+                            message_thread_id=message.thread_id,
+                        )
+                except BadRequest as e:
+                    if "parse entities" not in str(e).lower():
+                        raise
+                    logger.warning(
+                        f"Entry photo caption rejected by Telegram for {channel_id}; "
+                        f"falling back to plain caption: {e}"
+                    )
+                    with open(message.image_path, "rb") as photo:
+                        await self.app.bot.send_photo(
+                            chat_id=int(channel_id),
+                            photo=photo,
+                            caption=self._format_message_plain(message),
+                            message_thread_id=message.thread_id,
+                        )
+                return True
+
+            # show_image=False maps to "no link preview" for ordinary feed posts.
+            disable_preview = not message.show_image
 
             try:
                 await self.app.bot.send_message(
@@ -2832,45 +2777,6 @@ class TelegramAdapter(BaseAdapter):
             )
         return sent
 
-    async def _send_local_photo(
-        self,
-        channel_id: str,
-        text: str,
-        image_path: str,
-        thread_id: int | None = None,
-    ) -> None:
-        """Send a locally generated image with the rendered post as caption."""
-        assert self.app is not None
-        from telegram import FSInputFile
-        from telegram.error import BadRequest
-
-        html = markdown_to_telegram_html(text)
-        caption = html if len(html) <= 1024 else None
-        try:
-            await self.app.bot.send_photo(
-                chat_id=int(channel_id),
-                photo=FSInputFile(image_path),
-                caption=caption,
-                parse_mode="HTML" if caption else None,
-                message_thread_id=thread_id,
-            )
-            if caption is None:
-                await self.app.bot.send_message(
-                    chat_id=int(channel_id),
-                    text=text,
-                    disable_web_page_preview=True,
-                    message_thread_id=thread_id,
-                )
-        except BadRequest as e:
-            if "parse entities" not in str(e).lower():
-                raise
-            await self.app.bot.send_photo(
-                chat_id=int(channel_id),
-                photo=FSInputFile(image_path),
-                caption=text[:1024],
-                message_thread_id=thread_id,
-            )
-
     async def _send_template_message(
         self,
         channel_id: str,
@@ -2878,7 +2784,6 @@ class TelegramAdapter(BaseAdapter):
         thread_id: int | None = None,
         *,
         show_preview: bool = True,
-        image_path: str | None = None,
     ) -> None:
         """Send a template-rendered entry: Markdown → Telegram HTML with a
         plain-text fallback when Telegram rejects the entities. Link
@@ -2891,9 +2796,6 @@ class TelegramAdapter(BaseAdapter):
 
         disable_preview = not show_preview
         text = template_text
-        if image_path:
-            await self._send_local_photo(channel_id, text, image_path, thread_id)
-            return
         if len(text) > 3500:
             text = text[:3499] + "…"
         html = markdown_to_telegram_html(text)
@@ -2950,8 +2852,8 @@ class TelegramAdapter(BaseAdapter):
     # _format_message enforces the budget at build time.
     _TG_TEXT_LIMIT = 4096
 
-    def _format_message(self, message: Message) -> str:
-        """Format a Message for Telegram, guaranteed ≤ _TG_TEXT_LIMIT.
+    def _format_message(self, message: Message, max_length: int | None = None) -> str:
+        """Format a Message for Telegram, guaranteed within Telegram limits.
 
         HTML-escaping can multiply text length (`&` → `&amp;`), so with
         column-cap-sized title/summary/link the naive layout can exceed
@@ -2959,6 +2861,7 @@ class TelegramAdapter(BaseAdapter):
         the last-resort hard slice is caught by send_message's plain-text
         fallback if it ever lands mid-entity.
         """
+        limit = max_length or self._TG_TEXT_LIMIT
         summary = message.display_summary
         if summary and len(summary) > 500:
             summary = summary[:497] + "..."
@@ -2966,11 +2869,10 @@ class TelegramAdapter(BaseAdapter):
         # Link needs HTML-escape too: RSS URLs often contain `&` in query
         # strings, which Telegram's HTML parser rejects as an invalid entity
         # and fails the whole message send.
-        if message.channel_footer:
-            # channel_footer is stored as Markdown so it can also be used by
-            # templates. The default Telegram path sends HTML, therefore convert
-            # the footer here instead of leaking Markdown syntax into the post.
-            footer = [markdown_to_telegram_html(message.channel_footer)]
+        if message.footer_text and message.footer_url:
+            footer = [
+                f'<a href="{self._escape_html(message.footer_url)}">{self._escape_html(message.footer_text)}</a>',
+            ]
         else:
             footer = [
                 f'🔗 <a href="{self._escape_html(message.link)}">Read more</a>',
@@ -2988,17 +2890,17 @@ class TelegramAdapter(BaseAdapter):
             return "\n".join(parts)
 
         text = compose(message.display_title, summary)
-        if len(text) <= self._TG_TEXT_LIMIT:
+        if len(text) <= limit:
             return text
         text = compose(message.display_title, None)
         for title_cap in (512, 256, 128):
-            if len(text) <= self._TG_TEXT_LIMIT:
+            if len(text) <= limit:
                 return text
             text = compose(message.display_title[:title_cap] + "…", None)
-        if len(text) > self._TG_TEXT_LIMIT:
+        if len(text) > limit:
             # Only reachable with a pathological escape-heavy link; the
             # slice may cut a tag, which the plain-text fallback absorbs.
-            text = text[: self._TG_TEXT_LIMIT - 1] + "…"
+            text = text[: limit - 1] + "…"
         return text
 
     def _format_message_plain(self, message: Message) -> str:
@@ -3011,10 +2913,8 @@ class TelegramAdapter(BaseAdapter):
         if summary:
             parts.append(summary[:497] + "..." if len(summary) > 500 else summary)
             parts.append("")
-        if message.channel_footer:
-            # Plain-text fallback should show the label, not Markdown syntax.
-            footer_text = re.sub(r"\[([^\]]+)\]\(https?://[^)]+\)", r"\1", message.channel_footer)
-            parts.append(footer_text)
+        if message.footer_text and message.footer_url:
+            parts.append(f"{message.footer_text} — {message.footer_url}")
         else:
             parts.append(f"🔗 {message.link}")
             parts.append(f"📰 {message.source}")

@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     google_project_id: str | None = None
     deepl_api_key: str | None = None
     openai_api_key: str | None = None
-    openai_model: str = "gpt-5.4-nano"
+    openai_model: str = "gpt-5.6-luna"
     openai_base_url: str | None = None  # For compatible APIs
     # Override the built-in OpenAI translation system prompt. Supports
     # {source_desc} and {target_name} placeholders. None → use default.
@@ -55,28 +55,27 @@ class Settings(BaseSettings):
     # for crypto news feeds; override if your feeds are in another language.
     argos_source_language: str = "en"
 
-    # === AVEX AI publishing ===
-    ai_rewrite_enabled: bool = False
-    ai_rewrite_model: str = "gpt-5.6-luna"
-    # With FETCH_INTERVAL_MINUTES=90 and max_posts=1, each channel gets
-    # approximately one post every 1.5 hours while its queue has news.
-    max_posts_per_channel_per_cycle: int = 1
-    post_image_probability: float = 0.65
-    ai_image_enabled: bool = False
-    ai_image_model: str = "gpt-image-2"
-    ai_image_probability: float = 0.35
-    ai_image_dir: Path = Path("./data/generated_images")
-
-    # Footer links for the three AVEX language channels.
-    avex_en_channel_name: str = "AVEX | Crypto Exchange"
-    avex_en_channel_url: str = ""
-    avex_fr_channel_name: str = "AVEX | Plateforme d'échange de cryptomonnaies"
-    avex_fr_channel_url: str = ""
-    avex_de_channel_name: str = "AVEX | Kryptobörse"
-    avex_de_channel_url: str = ""
+    # ===== AVEX AI news autopilot =====
+    # When enabled, every new RSS entry is rewritten into a short editorial post
+    # for the subscription language instead of being relayed verbatim.
+    news_autopilot_enabled: bool = True
+    news_model: str = "gpt-5.6-luna"
+    news_max_source_chars: int = 6000
+    news_max_completion_tokens: int = 1200
+    news_image_percent: int = 40
+    news_image_model: str = "gpt-image-2.5-flare"
+    news_image_size: str = "1536x1024"
+    news_image_quality: Literal["low", "medium", "high", "auto"] = "medium"
+    news_system_prompt: str | None = None
+    news_footer_de_text: str = "AVEX | Kryptobörse"
+    news_footer_de_url: str = "https://t.me/avex_news"
+    news_footer_en_text: str = "AVEX | Crypto Exchange"
+    news_footer_en_url: str = "https://t.me/avex_exchange"
+    news_footer_fr_text: str = "AVEX | Plateforme d'échange de cryptomonnaies"
+    news_footer_fr_url: str = "https://t.me/avexmarkets"
 
     # Scheduling
-    fetch_interval_minutes: int = 90
+    fetch_interval_minutes: int = 60
     # Max feeds fetched concurrently per round — bounds the FeedFetcher
     # semaphore and the number of open HTTP connections. Raise for large
     # feed counts on a fast host; lower to ease memory / upstream rate limits.
@@ -230,18 +229,18 @@ class Settings(BaseSettings):
             return [part.strip() for part in s.split(",") if part.strip()]
         return v
 
-    @field_validator("max_posts_per_channel_per_cycle")
+    @field_validator("news_image_percent")
     @classmethod
-    def validate_max_posts_per_channel(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError("max_posts_per_channel_per_cycle must be at least 1")
+    def validate_news_image_percent(cls, v: int) -> int:
+        if not 0 <= v <= 100:
+            raise ValueError("news_image_percent must be between 0 and 100")
         return v
 
-    @field_validator("post_image_probability", "ai_image_probability")
+    @field_validator("news_max_source_chars", "news_max_completion_tokens")
     @classmethod
-    def validate_probability(cls, v: float) -> float:
-        if not 0.0 <= v <= 1.0:
-            raise ValueError("image probabilities must be between 0 and 1")
+    def validate_news_limits(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("news limits must be at least 1")
         return v
 
     @field_validator("feed_max_concurrent")
