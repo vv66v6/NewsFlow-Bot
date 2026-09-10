@@ -174,3 +174,9 @@ published Docker images.
 [0.9.2]: https://github.com/Lynthar/NewsFlow-Bot/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/Lynthar/NewsFlow-Bot/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/Lynthar/NewsFlow-Bot/compare/v0.8.0...v0.9.0
+
+## 1.0.4
+- AVEX image identity is now based on a stable normalized story URL/GUID, so DE/EN/FR subscriptions share one image and one image/no-image decision.
+- Added per-story image-generation locking to prevent concurrent duplicate image generation.
+- Serialized post-subscribe previews with the main dispatch mutex to prevent duplicate article sends caused by a preview/dispatch race.
+- Increased default AI completion budget to 1800 tokens and reject incomplete headline/body fields ending in ellipsis.

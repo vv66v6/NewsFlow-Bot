@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     news_autopilot_enabled: bool = True
     news_model: str = "gpt-5.6-luna"
     news_max_source_chars: int = 6000
-    news_max_completion_tokens: int = 1200
+    news_max_completion_tokens: int = 1800
     news_image_percent: int = 40
     news_image_model: str = "gpt-image-2"
     news_image_size: str = "1536x1024"

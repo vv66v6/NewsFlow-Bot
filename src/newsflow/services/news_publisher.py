@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -55,8 +56,9 @@ class NewsPublisher:
     def __init__(self) -> None:
         self.settings = get_settings()
         self._client: Any | None = None
-        self._draft_cache: dict[tuple[int, str], NewsDraft] = {}
-        self._image_cache: dict[int, Path | None] = {}
+        self._draft_cache: dict[tuple[str, str], NewsDraft] = {}
+        self._image_cache: dict[str, Path | None] = {}
+        self._image_locks: dict[str, asyncio.Lock] = {}
 
     @property
     def enabled(self) -> bool:
@@ -135,9 +137,29 @@ class NewsPublisher:
             return False
         return True
 
+    @staticmethod
+    def story_key(link: str, guid: str | None = None) -> str:
+        """Stable cross-subscription identity for one RSS story.
+
+        Prefer a normalized article URL so separate FeedEntry rows created for
+        the same article across subscriptions still share the same AI/image cache.
+        Fall back to GUID when a URL is unavailable.
+        """
+        from urllib.parse import urlsplit, urlunsplit
+
+        raw = (link or "").strip()
+        if raw:
+            parts = urlsplit(raw)
+            normalized = urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), "", ""))
+            if normalized:
+                return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+        fallback = (guid or "").strip()
+        return hashlib.sha256(fallback.encode("utf-8")).hexdigest()[:24] if fallback else "unknown"
+
     async def generate_draft(
         self,
         entry_id: int,
+        story_key: str,
         title: str,
         summary: str | None,
         content: str | None,
@@ -145,7 +167,7 @@ class NewsPublisher:
         target_language: str,
         published_at: str = "",
     ) -> NewsDraft:
-        key = (entry_id, target_language.lower())
+        key = (story_key, target_language.lower())
         cached = self._draft_cache.get(key)
         if cached:
             return cached
@@ -185,7 +207,13 @@ class NewsPublisher:
             headline = str(data.get("headline", "")).strip()
             body = str(data.get("body", "")).strip()
             image_prompt = str(data.get("image_prompt", "")).strip()
-            accepted = bool(headline and body and self._language_quality_ok(f"{headline} {body}", target_language))
+            accepted = bool(
+                headline
+                and body
+                and not body.rstrip().endswith(("...", "…"))
+                and not headline.rstrip().endswith(("...", "…"))
+                and self._language_quality_ok(f"{headline} {body}", target_language)
+            )
             if accepted:
                 break
             messages.append({
@@ -194,7 +222,7 @@ class NewsPublisher:
                     f"STOP. The previous answer was rejected because it was not fully in {language}. "
                     f"Translate/rewrite BOTH the headline and body into natural {language}. "
                     "Do not leave ANY English sentence or headline. Keep proper names, tickers and company names only where they are official names. "
-                    "Return JSON with the same three keys and nothing else."
+                    "Return JSON with the same three keys and nothing else. The headline and body must be complete; never end either field with \"...\" or an unfinished word/sentence."
                 ),
             })
 
@@ -204,59 +232,65 @@ class NewsPublisher:
         self._draft_cache[key] = draft
         return draft
 
-    def should_generate_image(self, entry_id: int) -> bool:
+    def should_generate_image(self, story_key: str) -> bool:
         """Deterministic ~40% choice so all three language posts share the same decision."""
-        digest = hashlib.sha256(f"avex-image:{entry_id}".encode()).digest()
+        digest = hashlib.sha256(f"avex-image:{story_key}".encode()).digest()
         return int.from_bytes(digest[:4], "big") % 100 < self.settings.news_image_percent
 
-    async def get_shared_image(self, entry_id: int, image_prompt: str) -> Path | None:
-        if entry_id in self._image_cache:
-            return self._image_cache[entry_id]
-        if not self.should_generate_image(entry_id):
-            self._image_cache[entry_id] = None
-            return None
-        if not image_prompt:
-            self._image_cache[entry_id] = None
-            return None
+    async def get_shared_image(self, story_key: str, image_prompt: str) -> Path | None:
+        """Return exactly one shared image for a story across all languages.
 
-        out_dir = self.settings.data_dir / "generated_images"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / f"entry_{entry_id}.png"
-        if path.is_file() and path.stat().st_size > 0:
-            self._image_cache[entry_id] = path
-            return path
+        The per-story lock also protects against concurrent subscription tasks
+        both deciding to generate the same image before either has written it.
+        """
+        lock = self._image_locks.setdefault(story_key, asyncio.Lock())
+        async with lock:
+            if story_key in self._image_cache:
+                return self._image_cache[story_key]
+            if not self.should_generate_image(story_key):
+                self._image_cache[story_key] = None
+                return None
+            if not image_prompt:
+                self._image_cache[story_key] = None
+                return None
 
-        try:
-            client = self._client_instance()
-            response = await client.images.generate(
-                model=self.settings.news_image_model,
-                prompt=image_prompt,
-                size=self.settings.news_image_size,
-                quality=self.settings.news_image_quality,
-                n=1,
-            )
-            item = response.data[0]
-            b64 = getattr(item, "b64_json", None)
-            if b64:
-                path.write_bytes(base64.b64decode(b64))
-            else:
-                # URL responses are supported as a fallback by downloading them through aiohttp.
-                image_url = getattr(item, "url", None)
-                if not image_url:
-                    raise ValueError("Image API returned neither b64_json nor url")
-                import aiohttp
+            out_dir = self.settings.data_dir / "generated_images"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            path = out_dir / f"story_{story_key}.png"
+            if path.is_file() and path.stat().st_size > 0:
+                self._image_cache[story_key] = path
+                return path
 
-                async with aiohttp.ClientSession() as http:
-                    async with http.get(image_url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-                        resp.raise_for_status()
-                        path.write_bytes(await resp.read())
-            self._image_cache[entry_id] = path
-            logger.info("Generated shared image for entry %s", entry_id)
-            return path
-        except Exception:
-            logger.exception("Image generation failed for entry %s; posting text only", entry_id)
-            self._image_cache[entry_id] = None
-            return None
+            try:
+                client = self._client_instance()
+                response = await client.images.generate(
+                    model=self.settings.news_image_model,
+                    prompt=image_prompt,
+                    size=self.settings.news_image_size,
+                    quality=self.settings.news_image_quality,
+                    n=1,
+                )
+                item = response.data[0]
+                b64 = getattr(item, "b64_json", None)
+                if b64:
+                    path.write_bytes(base64.b64decode(b64))
+                else:
+                    image_url = getattr(item, "url", None)
+                    if not image_url:
+                        raise ValueError("Image API returned neither b64_json nor url")
+                    import aiohttp
+
+                    async with aiohttp.ClientSession() as http:
+                        async with http.get(image_url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                            resp.raise_for_status()
+                            path.write_bytes(await resp.read())
+                self._image_cache[story_key] = path
+                logger.info("Generated shared image for story %s", story_key)
+                return path
+            except Exception:
+                logger.exception("Image generation failed for story %s; posting text only", story_key)
+                self._image_cache[story_key] = None
+                return None
 
 
 _news_publisher: NewsPublisher | None = None

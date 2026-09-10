@@ -569,8 +569,10 @@ class Dispatcher:
 
         if self._news_publisher.enabled and subscription.platform == "telegram":
             try:
+                story_key = self._news_publisher.story_key(entry.link, entry.guid)
                 draft = await self._news_publisher.generate_draft(
                     entry.id,
+                    story_key,
                     entry.title,
                     entry.summary,
                     entry.content,
@@ -578,7 +580,7 @@ class Dispatcher:
                     subscription.target_language,
                     entry.published_at.isoformat() if entry.published_at else "",
                 )
-                image_path = await self._news_publisher.get_shared_image(entry.id, draft.image_prompt)
+                image_path = await self._news_publisher.get_shared_image(story_key, draft.image_prompt)
                 # The Telegram adapter resolves the footer from the actual destination
                 # channel username. Do not derive it from language: multiple channels can
                 # share the same language (for example a test DE channel and @avex_news).
@@ -674,35 +676,35 @@ class Dispatcher:
             await asyncio.sleep(interval_seconds)
 
     async def dispatch_subscription(self, subscription_id: int) -> int:
-        """Dispatch unsent entries for one subscription, in its own session.
+        """Dispatch unsent entries for one subscription in its own session.
 
-        Used for the post-subscribe preview path: after a user runs /add, we
-        immediately deliver the single most-recent entry (seed kept it unsent)
-        so they don't have to wait a full FETCH_INTERVAL to see any content.
-
-        Returns:
-            Number of messages successfully sent.
+        Used for the post-subscribe preview path. The same dispatcher mutex as
+        the regular round prevents the preview from racing the main loop and
+        sending the same entry twice.
         """
-        session_factory = get_session_factory()
-        async with session_factory() as session:
-            sub_repo = SubscriptionRepository(session)
-            sub = await sub_repo.get_subscription_by_id(subscription_id)
-            if sub is None or not sub.is_active:
-                return 0
-            adapter = self._adapters.get(sub.platform)
-            if adapter is None:
-                logger.debug(
-                    f"dispatch_subscription: no adapter for {sub.platform}; "
-                    f"preview deferred to regular dispatch loop"
-                )
-                return 0
+        async with self._dispatch_mutex:
+            session_factory = get_session_factory()
+            async with session_factory() as session:
+                sub_repo = SubscriptionRepository(session)
+                sub = await sub_repo.get_subscription_by_id(subscription_id)
+                if sub is None or not sub.is_active:
+                    return 0
+                adapter = self._adapters.get(sub.platform)
+                if adapter is None:
+                    logger.debug(
+                        f"dispatch_subscription: no adapter for {sub.platform}; "
+                        f"preview deferred to regular dispatch loop"
+                    )
+                    return 0
 
-            # bypass_silent: a freshly-subscribed silent channel should
-            # still see one confirmation article so the user knows the
-            # subscription took. Subsequent dispatch cycles honor silent.
-            sent = await self._dispatch_to_subscription(session, sub, sub_repo, bypass_silent=True)
-            await session.commit()
-            return sent
+                # bypass_silent: a freshly-subscribed silent channel should
+                # still see one confirmation article so the user knows the
+                # subscription took. Subsequent dispatch cycles honor silent.
+                sent = await self._dispatch_to_subscription(
+                    session, sub, sub_repo, bypass_silent=True
+                )
+                await session.commit()
+                return sent
 
     async def notify_feed_deactivated(
         self, feed_id: int, feed_url: str, feed_title: str | None
