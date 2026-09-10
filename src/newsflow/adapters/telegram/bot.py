@@ -227,6 +227,7 @@ WELCOME_TEXT = (
     "/digest now — Generate and send one immediately\n\n"
     "<b>Other:</b>\n"
     "/status — Bot status\n"
+    "/news_now — Publish one AVEX story immediately (admin/test)\n"
     "/help — This message\n\n"
     "<b>Channels:</b> add me to your channel as an administrator, then "
     "manage it from this private chat by putting the channel first:\n"
@@ -252,6 +253,7 @@ _MENU_COMMANDS: list[tuple[str, str]] = [
     ("settopic", "Deliver a feed to the current topic"),
     ("digest", "Configure the AI daily/weekly digest"),
     ("status", "Show bot status"),
+    ("news_now", "Publish one AVEX news story now"),
     ("help", "Show the full command list"),
 ]
 
@@ -329,16 +331,6 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         await session.commit()
 
-    # Deliver a preview entry in the background so the user sees content
-    # without waiting a full fetch interval. spawn() keeps a strong ref so
-    # the event loop can't GC the task mid-flight.
-    if result.success and result.is_new and result.subscription:
-        dispatcher = get_dispatcher()
-        dispatcher.spawn(
-            dispatcher.schedule_preview(result.subscription.id),
-            name=f"preview:telegram:{result.subscription.id}",
-        )
-
     # Escape everything user-/feed-controlled: an "&" in a title or a query string in
     # a URL makes Telegram reject the HTML parse, stranding the user on "Adding
     # feed..." even though the subscription succeeded.
@@ -358,6 +350,60 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
     await processing_msg.edit_text(message, parse_mode="HTML")
+
+
+async def news_now_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Publish one AVEX story immediately to all three production channels.
+
+    This is an admin-only test/operations command. It deliberately bypasses
+    the normal 120-180 minute gate for this one story, then starts the next
+    scheduled window after successful delivery.
+    """
+    msg = update.message
+    if msg is None:
+        return
+    if not await _require_group_admin(update, context):
+        return
+
+    # Resolve the three production channels through Telegram so the command
+    # remains independent of their numeric chat IDs.
+    targets: dict[str, str] = {}
+    for username in ("@avex_news", "@avex_exchange", "@avexmarkets"):
+        try:
+            chat = await context.bot.get_chat(username)
+            if chat.type != ChatType.CHANNEL:
+                await msg.reply_text(f"⚠️ {username} is not a Telegram channel.")
+                return
+            targets[username.lstrip("@").lower()] = str(chat.id)
+        except Exception:
+            logger.exception("Failed to resolve AVEX channel %s", username)
+            await msg.reply_text(
+                f"⚠️ Can't access {username}. Check that the bot is an administrator there."
+            )
+            return
+
+    await msg.reply_text("⏳ Publishing one AVEX news story to DE + EN + FR...")
+    dispatcher = get_dispatcher()
+    try:
+        sent = await dispatcher.dispatch_avex_now(set(targets.values()))
+    except Exception:
+        logger.exception("/news_now failed")
+        await msg.reply_text("❌ Failed to publish the AVEX test story. Check the bot logs.")
+        return
+
+    if sent == 3:
+        await msg.reply_text(
+            "✅ Published one story to all 3 AVEX channels.\n"
+            "⏱️ The next automatic story will wait 120–180 minutes."
+        )
+    elif sent > 0:
+        await msg.reply_text(
+            f"⚠️ Published to {sent}/3 AVEX channels. Check the bot logs for the failed channel."
+        )
+    else:
+        await msg.reply_text(
+            "ℹ️ No common unsent story was found for all three AVEX channels."
+        )
 
 
 async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2450,6 +2496,7 @@ class TelegramAdapter(BaseAdapter):
         self.app.add_handler(CommandHandler("import", import_command))
         self.app.add_handler(CommandHandler("export", export_command))
         self.app.add_handler(CommandHandler("status", status_command))
+        self.app.add_handler(CommandHandler("news_now", news_now_command))
         # Inline-keyboard callbacks: /list pagination + /start quick-menu.
         self.app.add_handler(CommandHandler("manage", manage_command))
         self.app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^(list|menu|mg):"))

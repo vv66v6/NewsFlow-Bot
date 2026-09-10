@@ -690,6 +690,99 @@ class Dispatcher:
 
             await asyncio.sleep(interval_seconds)
 
+    async def dispatch_avex_now(self, channel_ids: set[str]) -> int:
+        """Publish one common unsent AVEX story immediately to the supplied channels.
+
+        The normal 120-180 minute scheduler is bypassed for this one explicit
+        admin-triggered test. A story must exist for all target channels so the
+        same article can be localized to DE/EN/FR and share exactly one image.
+        On full success the normal inter-story timer is started.
+        """
+        if not channel_ids:
+            return 0
+
+        async with self._dispatch_mutex:
+            session_factory = get_session_factory()
+            async with session_factory() as session:
+                feed_service = FeedService(session)
+                fetch_results = await feed_service.fetch_all_feeds()
+                # Persist any freshly fetched entries before querying subscriptions.
+                await session.commit()
+
+                sub_repo = SubscriptionRepository(session)
+                subscriptions = await sub_repo.get_all_active_subscriptions()
+                target_subs = [
+                    sub for sub in subscriptions
+                    if sub.platform == "telegram" and str(sub.platform_channel_id) in channel_ids
+                ]
+
+                # story_key -> channel_id -> [(subscription, entry)]
+                candidates: dict[str, dict[str, list[tuple[Subscription, FeedEntry]]]] = {}
+                for sub in target_subs:
+                    entries = await sub_repo.get_unsent_entries_for_subscription(sub.id, limit=20)
+                    channel_id = str(sub.platform_channel_id)
+                    for entry in entries:
+                        key = self._news_publisher.story_key(entry.link, entry.guid)
+                        candidates.setdefault(key, {}).setdefault(channel_id, []).append((sub, entry))
+
+                common = [
+                    (key, by_channel) for key, by_channel in candidates.items()
+                    if all(cid in by_channel for cid in channel_ids)
+                ]
+                if not common:
+                    await session.rollback()
+                    return 0
+
+                # Prefer the oldest common story, matching the regular dispatcher order.
+                def story_sort(item: tuple[str, dict[str, list[tuple[Subscription, FeedEntry]]]]) -> tuple[datetime, int]:
+                    key, by_channel = item
+                    entries = [pair[1] for pairs in by_channel.values() for pair in pairs]
+                    dates = [e.published_at for e in entries if e.published_at is not None]
+                    oldest = min(dates) if dates else datetime.max.replace(tzinfo=UTC)
+                    return oldest, min(e.id for e in entries)
+
+                story_key, by_channel = min(common, key=story_sort)
+                sent = 0
+                successful_subs: list[Subscription] = []
+
+                for channel_id in sorted(channel_ids):
+                    pairs = by_channel[channel_id]
+                    # One entry per channel; if the same story is present in multiple
+                    # feed subscriptions, use the oldest deterministic candidate.
+                    sub, entry = min(
+                        pairs,
+                        key=lambda pair: (
+                            pair[1].published_at or datetime.max.replace(tzinfo=UTC),
+                            pair[1].id,
+                            pair[0].id,
+                        ),
+                    )
+                    adapter = self._adapters.get("telegram")
+                    if adapter is None:
+                        continue
+                    message = await self._create_message(entry, sub, session)
+                    success = await adapter.send_message(channel_id, message)
+                    if not success:
+                        continue
+                    sent += 1
+                    successful_subs.append(sub)
+
+                    # Mark every matching subscription in this channel for this same
+                    # story, preventing a duplicate if multiple feeds carried it.
+                    for match_sub, match_entry in pairs:
+                        await sub_repo.mark_entry_sent(
+                            match_sub.id, match_entry.feed_id, match_entry.guid
+                        )
+
+                if sent == len(channel_ids):
+                    await self._news_publisher.record_story_sent(story_key)
+                await session.commit()
+                logger.info(
+                    "AVEX manual news_now published story %s to %s/%s channels",
+                    story_key, sent, len(channel_ids),
+                )
+                return sent
+
     async def dispatch_subscription(self, subscription_id: int) -> int:
         """Dispatch unsent entries for one subscription in its own session.
 

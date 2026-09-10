@@ -1,3 +1,9 @@
+## 1.0.7
+
+- Add admin `/news_now` command for a single synchronized AVEX test story.
+- Disable post-subscribe article preview delivery for Telegram.
+- Manual AVEX test respects shared story/image and starts the 120–180 minute schedule after full success.
+
 # v1.0.3
 
 - Resolve AVEX footer links from the actual Telegram destination channel username.
