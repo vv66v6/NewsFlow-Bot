@@ -32,6 +32,10 @@ settings, OPML import and export, and automatic back-off that disables a feed
 after ten consecutive failures instead of retrying indefinitely. 730 tests, run
 on Python 3.11 and 3.13 in CI.
 
+## AVEX AI News Autopilot
+
+This fork includes an optional article-by-article AI autopilot for Telegram. With `NEWS_AUTOPILOT_ENABLED=true`, new RSS entries are rewritten into short editorial posts per subscription language. The included AVEX defaults target German `@avex_news`, English `@avex_exchange`, and French `@avexmarkets`, with about 40% of articles receiving one shared generated editorial image. See `AVEX_SETUP.md` for deployment and channel commands.
+
 ## Install
 
 Docker is the deployment method this was designed around. You need one bot token

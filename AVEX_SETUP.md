@@ -1,145 +1,100 @@
-# AVEX publishing v1
+# AVEX News Autopilot — deployment
 
-This fork adds an AVEX-oriented publishing layer:
+This build turns NewsFlow into an article-by-article AI autoposter for three Telegram channels.
 
-- native AI rewrite for English, French and German;
-- one queued post per channel per dispatch cycle;
-- default 90-minute fetch/publish cadence;
-- no source URL in the normal Telegram footer;
-- localized AVEX channel footer;
-- stable image/no-image choice per article;
-- optional OpenAI image generation when an RSS image is missing;
-- generated images are cached in `data/generated_images/`.
+## Channels
 
-## 1. Environment
+- German: `@avex_news` → `de`
+- English: `@avex_exchange` → `en`
+- French: `@avexmarkets` → `fr`
 
-Copy `.env.example` to `.env` and set:
+The bot must be an administrator with permission to post messages and photos in all three channels.
 
-```env
-TELEGRAM_TOKEN=...
-OPENAI_API_KEY=...
+## AI behavior
 
-AI_REWRITE_ENABLED=true
-AI_REWRITE_MODEL=gpt-5.6-luna
+For every new RSS article:
 
-FETCH_INTERVAL_MINUTES=90
-MAX_POSTS_PER_CHANNEL_PER_CYCLE=1
+1. The article is deduplicated by the existing NewsFlow feed/guid history.
+2. The AI creates a short original news brief in the subscription language.
+3. The bot publishes one separate post to each subscribed channel.
+4. The channel footer is appended automatically:
+   - `AVEX | Kryptobörse` → `https://t.me/avex_news`
+   - `AVEX | Crypto Exchange` → `https://t.me/avex_exchange`
+   - `AVEX | Plateforme d'échange de cryptomonnaies` → `https://t.me/avexmarkets`
+5. No source list, source link, Binance link or original article link is shown to readers.
+6. About 40% of articles receive one generated editorial image. The same image is reused in DE/EN/FR for that article. The remaining ~60% are text-only.
 
-POST_IMAGE_PROBABILITY=0.65
-AI_IMAGE_ENABLED=false
-AI_IMAGE_MODEL=gpt-image-2
-AI_IMAGE_PROBABILITY=0.35
+The 40% decision is deterministic per article ID, so one article cannot get an image in one language and no image in another.
 
-AVEX_EN_CHANNEL_URL=https://t.me/...
-AVEX_FR_CHANNEL_URL=https://t.me/...
-AVEX_DE_CHANNEL_URL=https://t.me/...
-```
-
-The three URLs are the public links of the three AVEX channels. The names are already set to:
-
-- AVEX | Crypto Exchange
-- AVEX | Plateforme d'échange de cryptomonnaies
-- AVEX | Kryptobörse
-
-## 2. Subscribe the three channels
-
-In each Telegram channel/chat, add the bot as an administrator with permission to post.
-
-For each channel, subscribe the same RSS feeds and set its language:
-
-```text
-/add <RSS_URL>
-/setlang <RSS_URL> en
-/settrans <RSS_URL> on
-```
-
-French channel:
-
-```text
-/add <RSS_URL>
-/setlang <RSS_URL> fr
-/settrans <RSS_URL> on
-```
-
-German channel:
-
-```text
-/add <RSS_URL>
-/setlang <RSS_URL> de
-/settrans <RSS_URL> on
-```
-
-If an existing subscription has a custom `/template`, run:
-
-```text
-/template <RSS_URL> reset
-```
-
-The AVEX footer is then automatically appended by the default Telegram formatter.
-
-## 3. Publishing behavior
-
-The dispatcher fetches feeds every 90 minutes by default and sends at most one queued article per subscription per cycle. This means a channel with a healthy backlog receives roughly one article every 90 minutes.
-
-The AI receives the source title and article body and returns:
-
-```text
-TITLE: ...
-BODY:
-...
-```
-
-The generated text is not a literal translation. EN/FR/DE are rewritten as separate native editorial versions.
-
-The source URL remains stored in NewsFlow for deduplication and internal processing, but it is not shown in the normal AVEX post.
-
-## 4. Images
-
-`POST_IMAGE_PROBABILITY` controls whether an article should have an image.
-
-If selected:
-1. an RSS image is preferred;
-2. if no RSS image exists and `AI_IMAGE_ENABLED=true`, an AI image can be generated according to `AI_IMAGE_PROBABILITY`;
-3. the generated image is cached by source entry id and reused by EN/FR/DE.
-
-Start with:
+## Required environment
 
 ```env
-POST_IMAGE_PROBABILITY=0.65
-AI_IMAGE_ENABLED=false
+TELEGRAM_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
+OPENAI_API_KEY=YOUR_OPENAI_API_KEY
+
+NEWS_AUTOPILOT_ENABLED=true
+NEWS_MODEL=gpt-5.6-luna
+NEWS_IMAGE_PERCENT=40
+NEWS_IMAGE_MODEL=gpt-image-2.5-flare
+NEWS_IMAGE_SIZE=1536x1024
+NEWS_IMAGE_QUALITY=medium
+FETCH_INTERVAL_MINUTES=5
+
+NEWS_FOOTER_DE_TEXT=AVEX | Kryptobörse
+NEWS_FOOTER_DE_URL=https://t.me/avex_news
+NEWS_FOOTER_EN_TEXT=AVEX | Crypto Exchange
+NEWS_FOOTER_EN_URL=https://t.me/avex_exchange
+NEWS_FOOTER_FR_TEXT=AVEX | Plateforme d'échange de cryptomonnaies
+NEWS_FOOTER_FR_URL=https://t.me/avexmarkets
 ```
 
-After the text style is approved, enable:
+Do not put the real bot token or API key into GitHub. Put them only into Bothost environment variables.
 
-```env
-AI_IMAGE_ENABLED=true
+## Configure the three channels
+
+Open a private chat with the bot and set the language for each channel:
+
+```text
+/language @avex_news de
+/language @avex_exchange en
+/language @avexmarkets fr
 ```
 
-This intentionally keeps image generation off during the first test so you can validate the editorial pipeline without image API costs.
+Then add the same RSS sources to each channel. Example sources:
 
-## 5. First test
-
-For the first live test, keep:
-
-```env
-FETCH_INTERVAL_MINUTES=90
-AI_IMAGE_ENABLED=false
+```text
+/add @avex_news https://cointelegraph.com/rss
+/add @avex_news https://www.coindesk.com/arc/outboundfeeds/rss/
+/add @avex_news https://www.theblock.co/rss.xml
+/add @avex_news https://cryptoslate.com/feed/
+/add @avex_news https://decrypt.co/feed
 ```
 
-and use one RSS feed only.
+Repeat the same five `/add` commands with `@avex_exchange` and `@avexmarkets`.
 
-Confirm that the first post has:
+The first subscription to a feed may produce a preview. After that, the normal dispatcher sends new entries on the configured polling interval.
 
-- a concise emoji headline;
-- 1–3 short paragraphs;
-- no `[Source]`;
-- no original article URL;
-- no Binance CTA;
-- the correct AVEX channel footer;
-- the correct language.
+## Important
 
-After that, enable AI images and add the rest of the feeds.
+Do not configure `/digest` for these AVEX channels. The AVEX autopilot is the instant per-article pipeline; the old daily/weekly digest is a separate feature and is not needed for this workflow.
 
-## Notes
+## Testing
 
-The AI publishing layer is intentionally separate from the existing digest system. `DIGEST_SYSTEM_PROMPT` still controls `/digest`; `AI_REWRITE_*` controls normal per-article Telegram posts.
+For the first test, use only one feed in each channel:
+
+```text
+/add @avex_news https://cointelegraph.com/rss
+/add @avex_exchange https://cointelegraph.com/rss
+/add @avexmarkets https://cointelegraph.com/rss
+```
+
+Then wait for a new RSS item or temporarily lower `FETCH_INTERVAL_MINUTES` to `1` for testing.
+
+Check the logs for:
+
+- `Telegram bot started successfully`
+- AI generation errors
+- `Generated shared image for entry ...`
+- successful dispatches
+
+If image generation fails, the article is still posted as text. The bot deliberately degrades to text instead of losing the news item.
