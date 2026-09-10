@@ -55,8 +55,28 @@ class Settings(BaseSettings):
     # for crypto news feeds; override if your feeds are in another language.
     argos_source_language: str = "en"
 
+    # === AVEX AI publishing ===
+    ai_rewrite_enabled: bool = False
+    ai_rewrite_model: str = "gpt-5.6-luna"
+    # With FETCH_INTERVAL_MINUTES=90 and max_posts=1, each channel gets
+    # approximately one post every 1.5 hours while its queue has news.
+    max_posts_per_channel_per_cycle: int = 1
+    post_image_probability: float = 0.65
+    ai_image_enabled: bool = False
+    ai_image_model: str = "gpt-image-2"
+    ai_image_probability: float = 0.35
+    ai_image_dir: Path = Path("./data/generated_images")
+
+    # Footer links for the three AVEX language channels.
+    avex_en_channel_name: str = "AVEX | Crypto Exchange"
+    avex_en_channel_url: str = ""
+    avex_fr_channel_name: str = "AVEX | Plateforme d'échange de cryptomonnaies"
+    avex_fr_channel_url: str = ""
+    avex_de_channel_name: str = "AVEX | Kryptobörse"
+    avex_de_channel_url: str = ""
+
     # Scheduling
-    fetch_interval_minutes: int = 60
+    fetch_interval_minutes: int = 90
     # Max feeds fetched concurrently per round — bounds the FeedFetcher
     # semaphore and the number of open HTTP connections. Raise for large
     # feed counts on a fast host; lower to ease memory / upstream rate limits.
@@ -208,6 +228,20 @@ class Settings(BaseSettings):
 
                 return json.loads(s)
             return [part.strip() for part in s.split(",") if part.strip()]
+        return v
+
+    @field_validator("max_posts_per_channel_per_cycle")
+    @classmethod
+    def validate_max_posts_per_channel(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("max_posts_per_channel_per_cycle must be at least 1")
+        return v
+
+    @field_validator("post_image_probability", "ai_image_probability")
+    @classmethod
+    def validate_probability(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("image probabilities must be between 0 and 1")
         return v
 
     @field_validator("feed_max_concurrent")

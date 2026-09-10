@@ -25,6 +25,8 @@ _CANONICAL_ORDER = (
     "source",
     "published",
     "image_url",
+    "image_path",
+    "channel_footer",
     "mention",
     "original_title",
     "translated_title",

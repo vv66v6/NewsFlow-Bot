@@ -37,6 +37,7 @@ from newsflow.models.subscription import Subscription
 from newsflow.repositories.feed_repository import FeedRepository
 from newsflow.repositories.subscription_repository import SubscriptionRepository
 from newsflow.services.feed_service import FeedService
+from newsflow.services.ai_content import generate_image, rewrite_article, should_show_image
 from newsflow.services.translation.factory import get_translation_service
 
 if TYPE_CHECKING:
@@ -303,7 +304,9 @@ class Dispatcher:
             return 0
 
         # Get unsent entries
-        entries = await sub_repo.get_unsent_entries_for_subscription(subscription.id, limit=10)
+        entries = await sub_repo.get_unsent_entries_for_subscription(
+                    subscription.id, limit=self.settings.max_posts_per_channel_per_cycle
+                )
 
         if not entries:
             return 0
@@ -555,38 +558,50 @@ class Dispatcher:
         subscription: Subscription,
         session: AsyncSession,
     ) -> Message:
-        """Create a Message from a FeedEntry."""
-        # Determine language for source name
-        lang = "zh" if subscription.target_language.startswith("zh") else "en"
+        """Create an AVEX-ready message, optionally using AI editorial rewriting."""
+        target_language_raw = subscription.target_language
+        target_language = target_language_raw.lower().split("-")[0]
+        lang = "zh" if target_language.startswith("zh") else "en"
         source = get_source_name(entry.link, lang)
 
-        # Feeds embed raw HTML in summary/description and the platforms do not render
-        # it. Strip here; prefer `content` (fuller) over `summary`.
         raw_body = entry.content or entry.summary or ""
         plain_summary, _images = clean_html(raw_body)
         plain_summary = truncate_text(plain_summary, MAX_SUMMARY_LENGTH)
-        # Drop summaries that merely echo the title (rules in content_processor.
-        # dedup_summary). Dedup runs BEFORE translation so the redundant text also
-        # costs no API call.
         plain_summary = dedup_summary(entry.title, plain_summary)
 
-        # Translated fields start empty. The FeedEntry cache is shared by every
-        # subscription to this feed, so seeding here would hand a channel with
-        # translation off — or another target — whatever some other channel cached.
         title_translated: str | None = None
         summary_translated: str | None = None
 
-        # Translate if enabled for this subscription. Pass the cleaned
-        # summary so we don't spend tokens translating <p> tags or get back
-        # a translation that still contains HTML.
-        if subscription.translate:
+        # AVEX mode: rewrite rather than literal translation. This produces native
+        # editorial copy independently for EN/FR/DE.
+        rewritten = None
+        if self.settings.ai_rewrite_enabled and target_language in {"en", "fr", "de"}:
+            rewritten = await rewrite_article(entry.title, plain_summary, target_language)
+        if rewritten:
+            title_translated, summary_translated = rewritten
+        elif subscription.translate:
             title_translated, summary_translated = await self._translate_entry(
-                entry, subscription.target_language, session, plain_summary
+                entry, target_language_raw, session, plain_summary
             )
 
-        # Custom template renders from PRE-trim values so {summary}/{image_url} always
-        # resolve; show_summary is deliberately ignored. Render problems fall back to
-        # the default layout — a broken template must never lose an article.
+        # Decide once per source entry whether all language versions should carry an image.
+        # RSS image is preferred; if absent, optionally generate one cached image.
+        show_image = (
+            subscription.show_image is not False
+            and should_show_image(entry.id, self.settings.post_image_probability)
+        )
+        image_url = entry.image_url if show_image else None
+        image_path = None
+        if show_image and not image_url and should_show_image(entry.id + 1000000007, self.settings.ai_image_probability):
+            generated = await generate_image(
+                entry.id,
+                title_translated or entry.title,
+                summary_translated or plain_summary,
+            )
+            image_path = str(generated) if generated else None
+
+        footer = self._channel_footer(target_language)
+
         template_text: str | None = None
         if subscription.message_template:
             pretrim = Message(
@@ -595,27 +610,25 @@ class Dispatcher:
                 link=entry.link,
                 source=source,
                 published_at=entry.published_at,
-                image_url=entry.image_url,
+                image_url=image_url,
+                image_path=image_path,
                 title_translated=title_translated,
                 summary_translated=summary_translated,
+                channel_footer=footer,
                 mention=subscription.mention,
             )
             try:
-                template_text = (
-                    render_template(subscription.message_template, pretrim.to_template_values())
-                    or None
-                )
+                template_text = render_template(
+                    subscription.message_template, pretrim.to_template_values()
+                ) or None
+                if template_text and footer and "{channel_footer}" not in subscription.message_template:
+                    template_text = f"{template_text}\n\n{footer}"
             except Exception:
                 logger.exception(f"Template render failed for subscription {subscription.id}")
-                template_text = None
 
-        # Per-subscription display controls, applied at message build AFTER translation
-        # so a hidden summary still warms the shared translation cache.
-        if subscription.show_summary is False:
+        if subscription.show_summary is False and not self.settings.ai_rewrite_enabled:
             plain_summary = ""
             summary_translated = None
-        show_image = subscription.show_image is not False
-        image_url = entry.image_url if show_image else None
 
         return Message(
             title=entry.title,
@@ -624,13 +637,25 @@ class Dispatcher:
             source=source,
             published_at=entry.published_at,
             image_url=image_url,
+            image_path=image_path,
             title_translated=title_translated,
             summary_translated=summary_translated,
             template_text=template_text,
+            channel_footer=footer,
             mention=subscription.mention,
             thread_id=subscription.message_thread_id,
             show_image=show_image,
         )
+
+    def _channel_footer(self, language: str) -> str:
+        """Return a localized AVEX channel footer as Markdown."""
+        mapping = {
+            "en": (self.settings.avex_en_channel_name, self.settings.avex_en_channel_url),
+            "fr": (self.settings.avex_fr_channel_name, self.settings.avex_fr_channel_url),
+            "de": (self.settings.avex_de_channel_name, self.settings.avex_de_channel_url),
+        }
+        name, url = mapping.get(language, mapping["en"])
+        return f"[{name}]({url})" if url else name
 
     async def run_platform_monitor(self, interval_seconds: int = 30) -> None:
         """Periodically touch a per-platform heartbeat while its adapter

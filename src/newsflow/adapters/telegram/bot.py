@@ -2550,9 +2550,13 @@ class TelegramAdapter(BaseAdapter):
                     message.template_text,
                     message.thread_id,
                     show_preview=message.show_image,
+                    image_path=message.image_path,
                 )
                 return True
             text = self._format_message(message)
+            if message.image_path:
+                await self._send_local_photo(channel_id, text, message.image_path, message.thread_id)
+                return True
             # show_image=False maps to "no link preview": Telegram has no
             # separate image attachment — the preview card IS the image
             # surface (/setdisplay <url> image off).
@@ -2750,6 +2754,45 @@ class TelegramAdapter(BaseAdapter):
             )
         return sent
 
+    async def _send_local_photo(
+        self,
+        channel_id: str,
+        text: str,
+        image_path: str,
+        thread_id: int | None = None,
+    ) -> None:
+        """Send a locally generated image with the rendered post as caption."""
+        assert self.app is not None
+        from telegram import FSInputFile
+        from telegram.error import BadRequest
+
+        html = markdown_to_telegram_html(text)
+        caption = html if len(html) <= 1024 else None
+        try:
+            await self.app.bot.send_photo(
+                chat_id=int(channel_id),
+                photo=FSInputFile(image_path),
+                caption=caption,
+                parse_mode="HTML" if caption else None,
+                message_thread_id=thread_id,
+            )
+            if caption is None:
+                await self.app.bot.send_message(
+                    chat_id=int(channel_id),
+                    text=text,
+                    disable_web_page_preview=True,
+                    message_thread_id=thread_id,
+                )
+        except BadRequest as e:
+            if "parse entities" not in str(e).lower():
+                raise
+            await self.app.bot.send_photo(
+                chat_id=int(channel_id),
+                photo=FSInputFile(image_path),
+                caption=text[:1024],
+                message_thread_id=thread_id,
+            )
+
     async def _send_template_message(
         self,
         channel_id: str,
@@ -2757,6 +2800,7 @@ class TelegramAdapter(BaseAdapter):
         thread_id: int | None = None,
         *,
         show_preview: bool = True,
+        image_path: str | None = None,
     ) -> None:
         """Send a template-rendered entry: Markdown → Telegram HTML with a
         plain-text fallback when Telegram rejects the entities. Link
@@ -2769,6 +2813,9 @@ class TelegramAdapter(BaseAdapter):
 
         disable_preview = not show_preview
         text = template_text
+        if image_path:
+            await self._send_local_photo(channel_id, text, image_path, thread_id)
+            return
         if len(text) > 3500:
             text = text[:3499] + "…"
         html = markdown_to_telegram_html(text)
@@ -2841,12 +2888,15 @@ class TelegramAdapter(BaseAdapter):
         # Link needs HTML-escape too: RSS URLs often contain `&` in query
         # strings, which Telegram's HTML parser rejects as an invalid entity
         # and fails the whole message send.
-        footer = [
-            f'🔗 <a href="{self._escape_html(message.link)}">Read more</a>',
-            f"📰 {self._escape_html(message.source)}",
-        ]
-        if message.published_at:
-            footer.append(f"🕐 {message.published_at.strftime('%Y-%m-%d %H:%M')}")
+        if message.channel_footer:
+            footer = [message.channel_footer]
+        else:
+            footer = [
+                f'🔗 <a href="{self._escape_html(message.link)}">Read more</a>',
+                f"📰 {self._escape_html(message.source)}",
+            ]
+            if message.published_at:
+                footer.append(f"🕐 {message.published_at.strftime('%Y-%m-%d %H:%M')}")
 
         def compose(title_raw: str, summary_raw: str | None) -> str:
             parts = [f"<b>{self._escape_html(title_raw)}</b>", ""]
@@ -2880,10 +2930,13 @@ class TelegramAdapter(BaseAdapter):
         if summary:
             parts.append(summary[:497] + "..." if len(summary) > 500 else summary)
             parts.append("")
-        parts.append(f"🔗 {message.link}")
-        parts.append(f"📰 {message.source}")
-        if message.published_at:
-            parts.append(f"🕐 {message.published_at.strftime('%Y-%m-%d %H:%M')}")
+        if message.channel_footer:
+            parts.append(message.channel_footer)
+        else:
+            parts.append(f"🔗 {message.link}")
+            parts.append(f"📰 {message.source}")
+            if message.published_at:
+                parts.append(f"🕐 {message.published_at.strftime('%Y-%m-%d %H:%M')}")
         return "\n".join(parts)
 
     def _escape_html(self, text: str) -> str:

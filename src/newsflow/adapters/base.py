@@ -98,6 +98,8 @@ class Message:
     source: str
     published_at: datetime | None = None
     image_url: str | None = None
+    image_path: str | None = None
+    channel_footer: str = ""
 
     # Optional translated versions
     title_translated: str | None = None
@@ -146,6 +148,8 @@ class Message:
             "source": self.source,
             "published": published,
             "image_url": self.image_url or "",
+            "image_path": self.image_path or "",
+            "channel_footer": self.channel_footer,
             "mention": self.mention or "",
             "original_title": self.title,
             "translated_title": self.title_translated or "",
